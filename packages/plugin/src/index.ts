@@ -24,6 +24,7 @@ import { subprocessTerminalSpawner, type HostSubprocessLike } from './codex-work
 import { TypertGatewaySwitch } from './typert-gateway-switch.js'
 import type { FileViewerHostServiceLike } from './file-viewer-bridge.js'
 import { createPluginRouteDispatcher, type PluginRouteConnectionLike } from './plugin-route-dispatcher.js'
+import { installRemoteDiscoveryTools } from './remote-tools.js'
 import {
   installTuiRemoteCommand,
   type TuiRemoteBinding,
@@ -341,6 +342,7 @@ async function activate(
       await runtime.close()
     }
   }, 'dsh-remote lifecycle')
+  installRemoteDiscoveryTools(ctx, () => closed ? undefined : clientRuntime)
 }
 
 /**

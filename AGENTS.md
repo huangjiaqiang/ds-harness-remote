@@ -146,7 +146,7 @@ macOS 仍使用普通用户，优先复用 Desktop 官方 launcher，否则已�
 Desktop 默认保留的 `desktop` profile，只能由其官方 launcher 管理。一次性 Token 复用官方身份/凭据与既有注册码接口，
 不得记录或作为持久设备凭据使用。Windows 用户使用官方插件管理或已有 Harness 的官方命令。
 卸载先按安装指南停用 Linux 系统服务，再通过官方插件管理或 `dsh plugin remove` 移除 Remote；不自动删除 runtime、
-凭据或迁移旧 service。当前待发布版本为 `0.5.19`，Android `versionCode` / Expo iOS `buildNumber` 为 `64`；发版准备已将安装说明同步到 `ds-harness-remote@0.5.19`，Tag、npm 与 GitHub Release 的发布状态以实际发布结果为准。
+凭据或迁移旧 service。当前待发布版本为 `0.5.21`，Android `versionCode` / Expo iOS `buildNumber` 为 `66`；发版准备已将安装说明同步到 `ds-harness-remote@0.5.21`，Tag、npm 与 GitHub Release 的发布状态以实际发布结果为准。
 
 ## Validation Baseline
 
@@ -733,3 +733,157 @@ Plugin check、共享包/Plugin build、DSH bundle 校验、生产重建哈希�
 通过。真实 Desktop 更新/回滚、Windows/Electron 与跨设备 E2E 未新增验收。
 旧 generation 的依赖树不会被新插件重写；恢复旧包仍需要宿主正确识别 builtin 或使用
 官方插件管理恢复路径，不能宣称本修复覆盖所有历史回滚。
+
+## Remote discovery Tools (2026-10-26)
+
+本地 Desktop/web profile 注册原生 `remote_list_hosts` / `remote_list_workspaces`，由当前
+Client runtime 的已登录账号发现在线 Host 与已有工作区。发现工具只暴露主机 ID/名称/平台和
+工作区 backend/ID/名称/路径；这些元数据进入调用 Agent 的正常工具上下文和历史，不返回
+凭据。后续会话工具的历史读取另见下节；没有新增 MCP Server、通用 RPC 或远端文件写入。
+
+工作区查询复用 ClientConnection 的 membership、identity pin、Noise 和 Adaptive transport，
+使用独立临时连接；不得借用/替换 UI 连接或切换 Typert gateway。查询结束关闭临时连接，
+取消/退出账号/运行时关闭和 Server 替换拒绝旧结果。Host capability 决定后端查询范围，
+某后端查询失败在 unavailable 中报告，不能伪装成空目录。纯 dsh-TUI 目前没有本地 Client
+授权入口，只支持作为查询目标。工具服务为软注入，不阻塞没有 tools 服务的 Host 启动。
+
+Plugin check、共享包/Plugin build、58 文件 / 402 tests、DSH bundle 和 diff check 通过；
+最后发现流程收敛修改后，相关四文件 39 tests 与 Plugin check/build 再次通过。连接回归
+覆盖真实 Noise 握手与 transport fallback 下后台查询不改 UI 连接和进度。官方
+`dsh-tools@0.2.1-rc.1` 隔离安装下的注册、输出 schema 与卸载烟测通过；仓库本机残留的
+旧 tools 包与当前 session exports 不兼容，未改本机依赖安装。未验证真实 Desktop Agent
+调用或加密跨设备 E2E；未发布。
+
+## Remote Harness session Tools (2026-10-26)
+
+发现工具之外，新增 `remote_list_sessions`、`remote_read_session`、`remote_create_session`、
+`remote_send_message`、`remote_wait_sessions`、`remote_interrupt_session` 和
+`remote_get_operation`。会话工具仅支持 `backend: harness`，CodeX/ACP 仍仅支持发现；
+不通过虚拟 Harness adapter 扩展其会话写入。工具沿用官方 Typert session/workspace
+端点；每次会话操作从 workspace/follow 的 sessionIds 和 session/list 核对归属，拒绝
+外部路径、自报跨工作区 Session 与子 Agent 通用操作，不新增 Host wire 端点。
+
+创建/发送/中断要求 operationId；当前 Client runtime 内保留目标、参数 SHA-256 摘要
+和回执，不保存 prompt 正文。相同 key/参数复用结果，冲突拒绝；RPC 发出后异常标记
+unknown，不自动重发。最多 512 条、不驱逐旧 key；离开 Remote、退出账号、关闭或替换
+runtime 清空回执，not_found 不代表远端没有执行。此机制不是跨重启的持久幂等保证。
+历史结果只输出有界原生 record 摘录和分页游标，截断显式标记；这些所请求的历史内容
+会进入调用 Agent 的正常上下文和工具历史，不作为插件诊断日志写入。
+
+等待使用 native session/follow，最多八个目标、单次最多六十秒（零值读取快照）；
+取消等待仅关闭观察连接，不发送 session/cancel。idle 仅为观察到的执行状态，不等于
+目标完成；审批/问题检测受所保留历史范围限制，仍由用户在原生 UI 处理。工具不改变
+权限、不代答审批、不执行命令 RPC，也不删除排队消息。没有新增外部 MCP Server。
+
+本轮 Plugin check、59 文件 / 409 tests 通过。新增核心契约覆盖工作区与会话归属、
+mutation 去重/冲突/不确定回执、权限参数拒绝、有界历史游标、等待状态与取消、以及
+权限上下文变更后拒绝迟到结果。真实 Desktop Agent 派发与跨设备验收仍待完成，未发布。
+共享包/Plugin build、DSH bundle 校验、diff check 与英文 README 一致性通过；隔离安装
+官方 dsh-tools 0.2.1-rc.1 后，九个工具注册、输入/输出 schema、调用接缝与卸载烟测通过
+（使用 fixture，没有真实远端写操作）。未改变用户现有依赖安装。
+
+
+### Local authenticated Remote Tools validation (2026-10-26)
+
+复用本机 Desktop 已有 Client 鉴权与 Host identity，通过真实 Noise 加密 Relay，直接调用
+构建后的九个 ToolDefinition，成功发现在线本机 Host 与七个 Harness 工作区。当前仓库
+专用测试会话已验证列表、创建、文字发送、等待、固定回复读取和操作回执；创建/发送/
+中断重复 operationId 返回相同回执。历史四页共 21 条记录，游标读至末尾且无重复。
+第二轮确认 running 后中断，原生 turn/end 为 aborted/user，随后 idle；测试会话未调用
+工具。验证脚本按显式 truncated 标记处理有界历史，不将截断 JSON 当成完整对象解析。
+未安装或重启 Desktop 插件；这是构建后工具定义到真实 Host 的验证，尚不代表 Desktop
+Agent 自主选用工具、跨物理主机、审批或断线不确定结果恢复已验收。未输出凭据，未发布。
+
+
+### Cross-machine authenticated Remote Tools validation (2026-10-26)
+
+从本机 macOS Client 使用已有授权，经真实 Noise 加密 Relay 连接另一台 Linux
+LGB-NAS Host，发现三个 Harness 工作区，在独立测试会话验证创建、列表、发送、
+等待及远端模型固定回复读取。创建/发送/中断重复操作键返回相同回执；历史两页
+共 18 条记录读完且无重复。确认 running 后中断，原生 turn/end 为 aborted/user，
+随后 idle；测试会话未调用工具。九个构建后 ToolDefinition 的跨物理主机链路已
+实测，未修改生产鉴权配置、安装或重启插件。Desktop 本地模型自主选择这些工具、
+原生审批和断线不确定结果恢复仍待验收；此记录不宣称模型在本地离线推理。
+
+## Native Remote Host mentions (2026-10-26)
+
+Desktop/Web Client 软注入官方 inputTriggers 服务，注册独立 @/remote-host 候选源，
+与文件和会话候选并存。仅查询当前授权下在线主机；选中产生原子引用，canonical ref
+仅携带 Server 与 Host ID，不以显示名路由。新增本地 loopback 控制端点 mention.hosts /
+mention.resolve；严格参数校验，发送 codec 再查当前授权下在线主机，拒绝 Server 变化、
+失去可用性的目标和取消后的迟到结果。返回固定 Remote Tools 指引和 JSON 目标数据，
+主机名作为不可信数据；仅选择不派发、不切换 UI。工作区歧义仍需模型与用户解决。
+没有该原生服务的旧 UI 不显示候选；手打 @名字或粘贴 URI 不等于选择原子主机引用。
+不新增 Host Remote 业务端点或通用 tool RPC，也不安装/重启用户 Desktop。
+
+Plugin check/build、DSH bundle 与 diff check 通过；相关四文件 29 个核心测试通过。
+真实已有鉴权下已验证候选搜索 LGB-NAS、选中和发送 codec → 精确 Host ID 与工具指引，
+未通过 UI 自动发送任务。全量 60 文件 / 411 tests 中 410 通过，ACP workspace controls
+的 antigravity 文件 changes 事件断言失败；单文件 4 tests 重跑通过，串行全量仍复现。
+未修改该 ACP 实现或测试，不将全量标记为通过。安装后原生菜单交互和本地模型自主
+跨机派发仍待验收。浏览器引用 codec 无 Node 依赖，发布 Client bundle 已更新，未发布。
+
+
+## 0.5.20 local Desktop installation (2026-10-26)
+
+仓库版本统一升为 0.5.20，Android/Expo build 为 65；Plugin check/build、DSH bundle
+校验与 diff check 通过。本地 npm tarball 经 Desktop 官方 dsh launcher 安装到现有
+desktop profile，已重启应用；插件页确认 v0.5.20、组件运行中、原有 Remote 授权在线。
+原生 Desktop 输入 @LGB-NAS 显示远程主机候选，Enter 成功插入 Host 原子引用；未发送
+任务，输入框保留该引用供用户试用。安装来源为 ~/.dsh/local-packages 下的本地 tgz，
+不是 npm 发布版本；未创建 Tag/Release 或发布 npm。本地模型自动派发仍待验收。
+
+## Direct Host dispatch replaces model coordination (2026-10-26, 0.5.21)
+
+用户明确要求 @主机直接投递原文、本地不协调。旧 mention.resolve 不再返回模型指令，
+旧 Host chip 的 codec 明确拒绝发送并要求重新选择；已存在历史不改写。选中主机立即
+获得原生 CommandClaim，显示 `/remote 主机名` 和目标提示；发送时由 DOM dialog 显式
+选择已有 Harness 工作区，再经固定 mention.dispatch 创建并发送，mention.open 切换
+到原生 Remote 会话。复用 session Tools 的归属核验和操作回执，不新增 Host wire RPC、
+通用工具代理或本地对话镜像。原始文本不加调度说明，工作区路径不交给模型猜测；
+仅支持文字，取消选择无远端写入，回执不确定不换 key 重发。
+
+实机发现 Harness 0.2.1-rc.3 仅对 slash 前缀的普通草稿做提交 adjudication，因此
+`@remote/` 两阶段中间文本会漏到本地模型，已删除该方案。采用原生 `/remote 主机名`
+命令形式并注册 slash guard，刷新恢复但无绑定目标的草稿拒绝提交；@ 仅负责发现。
+选择后仍在输入框展示主机名，进入远端会话后消息正文只有用户原文。
+
+Plugin check/build、61 文件 / 413 tests、DSH bundle 通过；真实 Mac → LGB-NAS 鉴权
+链路已验证固定直投端点、原文/固定回复、无注入指令和重复操作回执。本轮的 DOM
+选择框、实际命令提交及远端会话导航需以随后原生 UI 验收记录为准。旧 ACP watcher
+用例曾失败，本轮全量通过，不将旧失败记录删除。版本同步 0.5.21 / Android build 66。
+
+
+### Direct dispatch follow-up: eager default workspace
+
+按用户随后要求，已移除工作区选择框。选中即启动 mention.default：建立并保留主连接，
+调用官方 workspace/initializeDefault 获取 durable default；无 durable default 时按
+官方 Harness 启动策略，用 workspace/follow 的 sessionIds 与 session/list.updatedAt
+选择最近使用的工作区（无会话时按 createdAt）。不从模型或 Client 自报路径推测目录。
+发送等待同一次准备，再直投原文；重新选择取消旧准备，旧连接不能迟到覆盖新目标。
+官方默认初始化可能创建固定默认目录，这属于用户本轮默认工作区授权与既有 allowlist。
+真实验证 lgb-3070 返回 Documents/deepseek-harness/default-workspace；LGB-NAS 按原生
+回退策略返回 /home/liguobao。最新全量 62 文件 / 414 tests 中 413 通过，仍为此前 ACP
+workspace watcher 断言失败；新增默认解析、直接派发和相关核心测试通过。
+
+本轮实际 Desktop UI 验证：@ 选中 lgb-3070 后显示带主机名的原生命令，未出现工作区
+选择框；从 UI 发送的 DIRECT_UI_OK_1026 验证消息已在 Windows 默认工作区的远端
+会话中找到并结束运行。相关 5 文件 / 28 核心测试通过。发送后页面 reload 触发本机
+Harness 0.2.1-rc.3 启动故障：dsh-client-locale 停在 loading，其余 53 entries 等待服务；
+Remote 此时尚未激活。退出重启后恢复本地界面，但远端会话自动导航未通过 UI 验收，
+不能把本轮直投验证描述为完整导航成功。安装包为本地 0.5.21-ready.tgz，未发布。
+
+### Direct dispatch crash correction (2026-10-26)
+
+上一条将 locale boot 故障直接归为 Desktop 自身问题的结论过早。直投现已复用
+准备好的同主机连接，避免工具临时连接以同一 device identity 替换主连接；请求失败不
+关闭共享连接，迟到结果仍核验当前连接。@ 直投导航改用官方 connection.reconnect，
+由 status 推送驱动已有 workspace/session 原生导航，不再 window.location.reload。
+settings/describe 保留本机 ui-settings-account 的真实 onboarding 设置，相应写入
+也留在本机；模型及其他 Host 配置仍取自远端，不伪造引导完成或改远端设置。
+
+实机 Desktop → LGB-NAS 已显示原文、REMOTE_UI_READY 回复、远程模式 / LGB-NAS、
+TURN / 端到端加密，输入框恢复可用，并可切换已有 CPU 查询会话；未重复发送用户
+CPU 查询。Plugin check/build、DSH bundle、相关连接/直投 29 tests 与 gateway 13 tests
+通过。安装本地 0.5.21-local-settings.tgz，未发布；未验证其他平台和普通 Remote
+入口仍用整页 reload 的流程，本轮只改 @ 直投切换路径。

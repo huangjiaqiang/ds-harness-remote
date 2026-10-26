@@ -8,6 +8,28 @@ import type { TypertGatewayLike } from '../src/typert-gateway-contract.js'
 import { TypertGatewaySwitch } from '../src/typert-gateway-switch.js'
 
 describe('TypertGatewaySwitch', () => {
+  it('keeps installation onboarding local while retaining remote model settings authority', async () => {
+    const localValue = { namespaces: [{ ns: 'ui-settings-account', value: { step: 'done' } }, { ns: 'llm', value: 'local' }] }
+    const remoteValue = { namespaces: [{ ns: 'ui-settings-account', value: { step: 'welcome' } }, { ns: 'llm', value: 'remote' }] }
+    const gateway = { invoke: vi.fn(async () => localValue), dispatchRpc: vi.fn(async () => ({ ok: true as const, value: localValue })) }
+    const remote = { invoke: vi.fn(async () => remoteValue), dispatch: vi.fn(async () => ({ ok: true as const, value: remoteValue })), open: async () => (async function* () {})() }
+    const switching = new TypertGatewaySwitch(gateway)
+    switching.install(); switching.selectRemote(remote)
+    try {
+      const call = gateway.invoke as unknown as TypertGatewayLike['invoke']
+      const value = await call({ namespace: 'settings', method: 'describe', args: {} }) as typeof localValue
+      expect(value.namespaces).toEqual([{ ns: 'llm', value: 'remote' }, { ns: 'ui-settings-account', value: { step: 'done' } }])
+      const dispatch = gateway.dispatchRpc as any
+      const signal = new AbortController().signal
+      expect((await dispatch('settings/describe', { args: {} }, signal)).value).toEqual(value)
+      remote.dispatch.mockClear()
+      await dispatch('settings/mutate', { args: { ns: 'ui-settings-account' } }, signal)
+      expect(remote.dispatch).not.toHaveBeenCalled()
+      await dispatch('settings/mutate', { args: { ns: 'llm' } }, signal)
+      expect(remote.dispatch).toHaveBeenCalledOnce()
+    } finally { switching.restore() }
+  })
+
   it('preserves the calling peer on local RPC paths without forwarding it to a remote Host', async () => {
     const signal = new AbortController().signal
     const peer = { signal: new AbortController().signal }

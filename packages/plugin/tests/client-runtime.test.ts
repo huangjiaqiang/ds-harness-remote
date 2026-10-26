@@ -31,6 +31,29 @@ const cleanupScenario1 = async () => {
 afterEach(cleanupScenario1)
 
 describe('ClientModeRuntime Host account control', () => {
+  it('reuses the prepared device connection for tools without replacing or closing it', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-client-shared-'))
+    directories.push(directory)
+    const runtime = new ClientModeRuntime(config(), new IdentityStore({ directory }),
+      { bindIdentity: vi.fn() } as unknown as ClientServerApi, gatewayWithCarrier(), logger())
+    await runtime.start()
+    const state = runtime as any
+    const close = vi.fn(async () => undefined)
+    const remote = { target: { deviceId: 'host-1' }, client: { close } }
+    state.connected = remote
+    const connect = vi.spyOn(state.connection, 'connect')
+    try {
+      expect(await state.withToolRemote('host-1', new AbortController().signal,
+        async (value: unknown) => { expect(value).toBe(remote); return 'accepted' })).toBe('accepted')
+      await expect(state.withToolRemote('host-1', new AbortController().signal,
+        async () => { throw new Error('request failed') })).rejects.toThrow('request failed')
+      expect(connect).not.toHaveBeenCalled()
+      expect(close).not.toHaveBeenCalled()
+      await expect(state.withToolRemote('host-1', new AbortController().signal,
+        async () => { state.connected = undefined; return 'late'; })).rejects.toMatchObject({ code: 'CANCELLED' })
+    } finally { state.connected = undefined; await runtime.close() }
+  })
+
   it('retires pending connections on explicit exit, account sign-out and runtime shutdown', async () => {
     await runScenarios((['exit', 'sign-out', 'shutdown'] as const).flatMap(action =>
       (['mode', 'directory'] as const).map(request => ({ name: `${action}: pending ${request}`, run: async () => {
@@ -162,6 +185,27 @@ describe('ClientModeRuntime Host account control', () => {
       expect(create).toHaveBeenCalledTimes(2)
       expect(sockets.slice(0, 2).every(socket => socket.readyState === 3)).toBe(true)
       expect(connected.client.getStats().mode).toBe('Relay')
+      // Agent discovery uses the same real handshake/fallback path without
+      // replacing the UI's connection or its progress state.
+      const state = runtime as unknown as {
+        connection: import('../src/client-connection.js').ClientConnection
+        connected: unknown
+        connectionProgress: unknown
+        connectionProgressRun: number
+      }
+      state.connected = connected
+      const progress = state.connectionProgress
+      const run = state.connectionProgressRun
+      const background = state.connection.connect('host-1', undefined, { background: true })
+      await vi.advanceTimersByTimeAsync(41000)
+      const candidate = await background
+      expect(state.connectionProgress).toBe(progress)
+      expect(state.connectionProgressRun).toBe(run)
+      expect(state.connected).toBe(connected)
+      await candidate.client.close()
+      expect(state.connected).toBe(connected)
+      expect(connected.client.getStats().mode).toBe('Relay')
+      state.connected = undefined
     } finally {
       await connected?.client.close()
       await runtime.close()

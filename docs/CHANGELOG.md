@@ -1,3 +1,18 @@
+## 0.5.21 — 2026-10-26
+
+- 修复 @ 远程主机发送后的页面卡住和启动失败，直接进入远端会话；保留本机首次使用引导状态。
+
+- `@` Host selection now uses the remote default workspace and sends the original message directly to the remote Agent, opening its native session without local-model coordination.
+- `@` 选择主机后自动使用远端默认工作区，原文直接交给远端 Agent，并打开原生远端会话；不再向用户消息拼入调度说明，也不再让本地模型协调。
+
+## 0.5.20 — 2026-10-26
+
+- Add online Remote Host suggestions to the native Desktop/web `@` menu, with target validation when sending.
+- 在支持原生输入补全的 Desktop/Web 会话中，`@` 菜单新增在线远程主机，可选择目标机器后交给 Agent 派发 Harness 任务。
+
+- Add native Remote Agent tools to discover online Hosts and workspaces, create and message Harness sessions, read history, wait for execution and request interruption. Operation receipts help avoid duplicate tasks after uncertain delivery.
+- 新增原生 Remote Agent 工具：发现在线主机和工作区，创建 Harness 会话、发送文字任务、读取历史、等待执行和请求中断；操作回执帮助避免投递结果不确定时重复派发。
+
 ## 0.5.19 — 2026-10-26
 
 Android build 64.

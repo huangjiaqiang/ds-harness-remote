@@ -41,7 +41,7 @@ DS Harness Remote 只是通往这个工作环境的另一个窗口。
 
 已支持 DeepSeek Harness 桌面版，使用最新版本安装即可：
 
-`ds-harness-remote@0.5.19`
+`ds-harness-remote@0.5.21`
 
 ## 目录
 
@@ -65,6 +65,9 @@ DS Harness Remote 只是通往这个工作环境的另一个窗口。
 
 ## 主要特性
 
+- 在支持原生 `inputTriggers` 的本地 Desktop/Web 会话中，在消息开头输入 `@`，选择在线主机，再描述任务。输入框显示 `/remote 主机名`，选中后立即连接并准备远端默认工作区，不再弹出选择框；发送会等待准备完成后投递。插件直接把原文投递到新建的远端会话，并打开原生 Remote 界面；本地模型不参与协调。仅选择不会派发，目前该入口只支持文字。使用前先在本地 Remote 面板登录。
+- 在本地 Remote 面板登录后，Harness Agent 可通过 `remote_list_hosts` 和 `remote_list_workspaces` 查询在线主机与已有工作区。另有 Harness 原生会话列表、历史读取、创建、文字任务发送、等待、中断和操作回执工具。复用加密 Remote 连接，不切换当前界面；返回的元数据与所读取历史会进入调用 Agent 的工具上下文。CodeX/ACP 会话操作与外部 MCP 入口尚未接入。
+
 Remote 支持 Desktop/浏览器原生「自动化任务」界面的任务列表、投递历史、时间/名称/指令修改和删除；新建仍通过官方 `schedule_create` Agent 工具完成。任务保存在 Host 并由 Host 执行，需更新 Host Remote 插件以启用管理接口。
 
 - 从另一台设备（Web、PC、移动端）远程到本地Harness实例：DSH 优先，CodeX、Cursor、Antigravity 一样可用。
@@ -82,7 +85,7 @@ Remote 支持 Desktop/浏览器原生「自动化任务」界面的任务列表�
 
 | 客户端 | 形态 | 状态 | 说明 |
 | --- | --- | --- | --- |
-| DSH&nbsp;Desktop&nbsp;插件 | Harness 桌面版内的 Remote 侧栏 | 已支持 | 装 `ds-harness-remote@0.5.19`；Host 也可以就是这台电脑 |
+| DSH&nbsp;Desktop&nbsp;插件 | Harness 桌面版内的 Remote 侧栏 | 已支持 | 装 `ds-harness-remote@0.5.21`；Host 也可以就是这台电脑 |
 | Remote&nbsp;Web | 浏览器页面 | 已支持 | 打开 [dsh.r2049.cn/app](https://dsh.r2049.cn/app)，复用 Harness 原生界面 |
 | Android | 原生 App | 已支持 | 从 [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) 下载 APK，见 [Android 说明](apps/android/README.md) |
 | iOS | TestFlight 内测 | 内测 | 未公开上架，入口见 [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
@@ -98,10 +101,10 @@ Remote 支持 Desktop/浏览器原生「自动化任务」界面的任务列表�
 
 在 DeepSeek Harness Desktop 的 **扩展 / 插件管理** 中，选择从 **npm** 安装，输入包名和版本：
 
-`ds-harness-remote@0.5.19`
+`ds-harness-remote@0.5.21`
 
 安装后重启 Desktop。也可使用它的官方 `dsh` 启动器安装固定版本：
-`dsh plugin --profile desktop add -w ds-harness-remote@0.5.19`。
+`dsh plugin --profile desktop add -w ds-harness-remote@0.5.21`。
 
 ### dsh-TUI Host
 
@@ -113,7 +116,7 @@ Remote 支持 Desktop/浏览器原生「自动化任务」界面的任务列表�
 通过 DSH 插件管理命令，将确切版本加入 `web` profile：
 
 ```sh
-dsh plugin --profile web add -w ds-harness-remote@0.5.19
+dsh plugin --profile web add -w ds-harness-remote@0.5.21
 ```
 
 安装后请重启 DeepSeek Harness。

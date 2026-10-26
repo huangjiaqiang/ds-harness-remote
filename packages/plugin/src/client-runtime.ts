@@ -1,9 +1,10 @@
+import { defaultRemoteWorkspace } from './remote-default-workspace.js'
 import type { ControlResult } from './control-result.js'
 import { AgentAcpClient, CodexRemoteClient } from '@dsh-remote/client-core'
 import type { PluginRouteCallResult } from '@dsh-remote/protocol'
 import type { RtcPeerConnectionFactory } from '@dsh-remote/webrtc'
 import type { AcpVirtualWorkspaceView } from './acp/virtual-harness.js'
-import { AcpVirtualHarness, discoverAcpVirtualWorkspaces } from './acp/virtual-harness.js'
+import { acpCwdWorkspaceId, AcpVirtualHarness, discoverAcpVirtualWorkspaces } from './acp/virtual-harness.js'
 import type { HarnessMode } from './harness-target.js'
 import { probeRemoteHostFeatures, remoteHostFeatures } from './client-capabilities.js'
 import { ClientCodexStreams } from './client-codex-streams.js'
@@ -43,6 +44,7 @@ import type { SafeLogger } from './logging.js'
 import { LoopbackPreview } from './loopback-preview.js'
 import { RemoteTypertGateway } from './remote-typert-gateway.js'
 import { safeErrorCode } from './safe-error.js'
+import { RemoteSessionTools, type SessionToolOperation } from './remote-session-tools.js'
 import type { OAuthProvider } from './server-api.js'
 import { ClientServerApi, ServerApiError } from './server-api.js'
 import type { TypertGatewayLike } from './typert-gateway-contract.js'
@@ -86,6 +88,13 @@ export class ClientModeRuntime {
   private connectionProgressRun = 0
   private closed = false
   private remoteLifetime = new AbortController()
+  private readonly sessionTools = new RemoteSessionTools((hostId, signal, query) => this.withToolRemote(hostId, signal, query))
+
+  runSessionTool(operation: SessionToolOperation, args: unknown, signal: AbortSignal): Promise<unknown> {
+    this.assertHostAuthorizationForDeviceDiscovery()
+    if (this.closed) throw new ClientModeError('CANCELLED', 'The Remote runtime is closed.')
+    return this.sessionTools.run(operation, args, signal)
+  }
 
   constructor(
     private readonly config: ResolvedConfig,
@@ -118,6 +127,10 @@ export class ClientModeRuntime {
       get identities() { return owner.identities },
     })
     this.control = new ClientControl({
+      runSessionTool: (...args) => owner.runSessionTool(...args),
+      discoverToolWorkspaces: (...args) => owner.discoverToolWorkspaces(...args),
+      defaultMentionWorkspace: (...args) => owner.defaultMentionWorkspace(...args),
+      openMentionSession: (...args) => owner.openMentionSession(...args),
       detailedStatus: (...args) => owner.detailedStatus(...args),
       devices: (...args) => owner.devices(...args),
       get server() { return owner.server },
@@ -263,16 +276,28 @@ export class ClientModeRuntime {
     }
   }
 
-  async devices(): Promise<RemoteDeviceView[]> {
+  async devices(signal?: AbortSignal): Promise<RemoteDeviceView[]> {
+    signal = signal === undefined ? this.remoteLifetime.signal : AbortSignal.any([signal, this.remoteLifetime.signal])
+    signal?.throwIfAborted()
+    if (this.closed) throw new ClientModeError('CANCELLED', 'The Remote runtime is closed.')
     this.assertHostAuthorizationForDeviceDiscovery()
     this.requireIdentity()
-    const serverDevices = await this.server.listDevices()
+    const serverDevices = await this.server.listDevices(signal)
+    signal?.throwIfAborted()
     const remoteDevices = serverDevices.filter(device => device.deviceId !== this.host?.hostStatus().deviceId)
-    return Promise.all(remoteDevices.map(async device => {
-      await this.connection.authorizeHostPeer(device)
-      const presence = await this.server.presenceFor(device.deviceId).catch(() => ({ online: false }))
+    const results = await Promise.allSettled(remoteDevices.map(async device => {
+      signal?.throwIfAborted()
+      await this.connection.authorizeHostPeer(device, signal)
+      const presence = await this.server.presenceFor(device.deviceId, signal).catch(() => ({ online: false }))
+      signal?.throwIfAborted()
+      this.assertHostAuthorizationForDeviceDiscovery()
       return { ...device, ...presence }
     }))
+    signal.throwIfAborted()
+    this.assertHostAuthorizationForDeviceDiscovery()
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+    return results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
   }
 
   /**
@@ -396,6 +421,115 @@ export class ClientModeRuntime {
   async listRemoteWorkspaces(targetDeviceId: string, signal?: AbortSignal): Promise<RemoteWorkspaceView[]> {
     const remote = await this.ensureConnected(targetDeviceId, signal)
     return readRemoteWorkspaceBaseline(new RemoteTypertGateway(remote.client), signal)
+  }
+
+  /** Read-only Agent discovery owns a temporary carrier, never the UI selection. */
+  async discoverToolWorkspaces(targetDeviceId: string, signal: AbortSignal): Promise<{
+    workspaces: Array<RemoteWorkspaceView & { backend: string }>
+    unavailable: Array<{ backend: string; code: string }>
+  }> {
+    return this.withToolRemote(targetDeviceId, signal, async (remote, activeSignal) => {
+      const workspaces: Array<RemoteWorkspaceView & { backend: string }> = []
+      const unavailable: Array<{ backend: string; code: string }> = []
+      const read = async (backend: string, query: () => Promise<RemoteWorkspaceView[]>) => {
+        activeSignal.throwIfAborted()
+        try {
+          for (const row of await query()) {
+            workspaces.push({ backend, workspaceId: row.workspaceId, path: row.path, title: row.title })
+          }
+        } catch {
+          activeSignal.throwIfAborted()
+          unavailable.push({ backend, code: 'BACKEND_UNAVAILABLE' })
+        }
+      }
+      if (remote.features.remoteGateway) {
+        await read('harness', () => readRemoteWorkspaceBaseline(new RemoteTypertGateway(remote.client), activeSignal))
+      }
+      if (remote.features.codex) {
+        await read('codex', () => discoverCodexVirtualWorkspaces(new CodexRemoteClient(remote.client), activeSignal))
+      }
+      for (const backend of ['cursor', 'antigravity', 'pi', 'opencode', 'claude'] as const) {
+        if (!remote.features[backend]) continue
+        // Use the existing ACP catalog RPC directly: optional UI discovery swallows
+        // backend errors, whereas a tool must distinguish unavailable from empty.
+        await read(backend, async () => {
+          const rows = await new AgentAcpClient(remote.client).call('dsh/workspaceList', { backend }, activeSignal)
+          if (!Array.isArray(rows)) throw new ClientModeError('INVALID_MESSAGE', 'Invalid workspace catalog.')
+          return rows.map(row => {
+            if (typeof row?.path !== 'string' || !row.path.trim()
+              || (row.title !== undefined && typeof row.title !== 'string')) {
+              throw new ClientModeError('INVALID_MESSAGE', 'Invalid workspace catalog row.')
+            }
+            return { workspaceId: acpCwdWorkspaceId(row.path, backend), path: row.path, title: row.title ?? remoteWorkspaceTitle(row.path) }
+          })
+        })
+      }
+      return { workspaces, unavailable }
+    })
+  }
+
+  private async withToolRemote<T>(
+    targetDeviceId: string,
+    signal: AbortSignal,
+    query: (remote: ConnectedRemote, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    this.assertHostAuthorizationForDeviceDiscovery()
+    if (this.closed) throw new ClientModeError('CANCELLED', 'The Remote runtime is closed.')
+    const activeSignal = AbortSignal.any([signal, this.remoteLifetime.signal])
+    // A device has one Control connection. Opening a second connection with
+    // the same identity replaces the warm UI connection on the Server.
+    const shared = this.connected
+    if (shared?.target.deviceId === targetDeviceId) {
+      this.assertRemoteCurrent(shared, activeSignal)
+      const result = await query(shared, activeSignal)
+      this.assertRemoteCurrent(shared, activeSignal)
+      this.assertHostAuthorizationForDeviceDiscovery()
+      return result
+    }
+    const remote = await this.connection.connect(targetDeviceId, activeSignal, { background: true })
+    let closing: Promise<void> | undefined
+    const close = () => closing ??= remote.client.close()
+    const onAbort = () => { void close().catch(() => undefined) }
+    activeSignal.addEventListener('abort', onAbort, { once: true })
+    try {
+      activeSignal.throwIfAborted()
+      const result = await query(remote, activeSignal)
+      activeSignal.throwIfAborted()
+      this.assertHostAuthorizationForDeviceDiscovery()
+      return result
+    } finally {
+      activeSignal.removeEventListener('abort', onAbort)
+      await close()
+    }
+  }
+
+  private mentionPreparation = new AbortController()
+
+  async defaultMentionWorkspace(hostId: string, signal: AbortSignal) {
+    this.mentionPreparation.abort()
+    const preparation = new AbortController()
+    this.mentionPreparation = preparation
+    const active = AbortSignal.any([signal, preparation.signal, this.remoteLifetime.signal])
+    this.assertHostAuthorizationForDeviceDiscovery()
+    const remote = await this.ensureConnected(hostId, active, () => this.mentionPreparation === preparation)
+    this.assertRemoteCompatible(remote)
+    const workspace = await defaultRemoteWorkspace(new RemoteTypertGateway(remote.client), active)
+    this.assertRemoteCurrent(remote, active)
+    this.assertHostAuthorizationForDeviceDiscovery()
+    return workspace
+  }
+
+  async openMentionSession(hostId: string, workspaceId: string, sessionId: string, signal: AbortSignal): Promise<unknown> {
+    // Native session read performs workspace/session authority validation before navigation.
+    await this.runSessionTool('remote_read_session', { hostId, backend: 'harness', workspaceId, sessionId, maxMessages: 1 }, signal)
+    const remote = await this.ensureConnected(hostId, signal)
+    this.assertRemoteCompatible(remote)
+    await this.closeCodexVirtual()
+    await this.closeCursorVirtual()
+    this.assertRemoteCurrent(remote, signal)
+    this.selectRemoteTarget(remote)
+    this.pendingWorkspaceSelection = { targetDeviceId: hostId, workspaceId, sessionId, backend: 'harness' }
+    return this.status()
   }
 
   async openRemoteWorkspace(targetDeviceId: string, path: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -636,6 +770,8 @@ export class ClientModeRuntime {
   }
 
   private async leaveRemote(): Promise<void> {
+    this.mentionPreparation.abort()
+    this.sessionTools.invalidate()
     this.remoteLifetime.abort(new ClientModeError('CANCELLED', 'The Remote connection was closed.'))
     this.remoteLifetime = new AbortController()
     const previous = this.connected

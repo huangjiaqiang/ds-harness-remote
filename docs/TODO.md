@@ -1,6 +1,6 @@
 # TODO
 
-更新日期：2026-10-24。当前内部待发布版本统一为 `0.5.19`，Android `versionCode 64`，Expo iOS `buildNumber 64`；尚未为此版本创建 Tag 或 Release。
+更新日期：2026-10-24。当前内部待发布版本统一为 `0.5.21`，Android `versionCode 66`，Expo iOS `buildNumber 66`；尚未为此版本创建 Tag 或 Release。
 
 本次全仓 check 与 794 tests 通过（Plugin 407、Android 195；7+78+1+12+44+43+7+407+195=794）。生产 build（含 Android Hermes export）与 DSH bundle 校验通过，未新增原生真机或跨设备验收；既有 Metro noble/hashes exports fallback 警告仍保留。
 
@@ -12,6 +12,22 @@ Host 插件、随包 Remote 客户端和 Android 已移除 Harness `0.1.1-rc.2` 
 
 状态规则：勾选项只表示条目所述范围完成。源码实现、自动化验证与真机验收分别记录。
 RC.1 的源码适配与本地自动化验证见兼容性说明；不能替代真机验收。
+
+## 2026-10-26 Remote Tools
+
+- [x] 原生 `@` 主机发现与直接派发；选中后原生命令显示主机名，自动使用远端默认工作区，原文投递后打开远端会话，不经本地模型。
+- [x] 本机 Desktop 安装 0.5.21，旧版原生 @LGB-NAS 搜索和 Enter 插入 Host 引用通过；0.5.21 已改为直接派发命令。
+- [ ] 原生直接派发端到端 UI 验收；不再以本地模型自动协调作为 @ 入口目标。
+
+- [x] 原生 `remote_list_hosts` / `remote_list_workspaces`，复用 Client 授权与加密连接，过滤本机/离线主机，按可用后端查询；临时连接不切换 UI，取消/退出/Server 替换丢弃旧结果。
+- [ ] 真实 Desktop Agent 调用、远端 dsh-TUI Host、多个 Host 与正在使用的 UI 连接并行的加密跨设备验收。
+- [ ] terminal-only dsh-TUI 本地发起查询的独立 Client 授权入口；当前只能作为查询目标。
+- [x] Harness 原生会话列表/有界历史分页/创建/文字发送/等待/中断与操作回执；固定官方端点，核对工作区 sessionIds，不开放子 Agent 通用操作或审批代答。
+- [x] 创建/发送/中断按操作键和参数摘要在当前 runtime 内去重；不确定结果不自动重发，重置后回执缺失不代表未执行。
+- [x] 本机已有鉴权 + 真实加密 Relay：直接调用构建后的工具定义，验证 Harness 创建/发送/等待/固定回复读取、四页历史无重复、操作键去重与运行中中断（原生 aborted/user）。
+- [x] Mac → LGB-NAS Linux 跨物理主机：已有鉴权、加密 Relay、远端模型回复、两页历史、创建/发送/中断去重与运行中中断通过。
+- [ ] 原生审批、断线后不确定结果恢复仍待验证；Remote Tools 保留用于明确请求的模型协调，@ 入口改为直接派发。
+- [ ] CodeX/ACP 会话工具、外部 MCP 入口。
 
 ## 2026-10-24 DS Bot 0.2.1 适配
 

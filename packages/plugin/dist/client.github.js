@@ -14,12 +14,12 @@
         !__hasOwnProp.call(to, key) && key !== except && __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
     return to;
   };
-  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  var __toESM = (mod, isNodeMode, target2) => (target2 = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
     // If the importer is in node compatibility mode or this is not an ESM
     // file that has been converted to a CommonJS file using a Babel-
     // compatible transform (i.e. "__esModule" has not been set), then set
     // "default" to the CommonJS "module.exports" for node compatibility.
-    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: !0 }) : target,
+    isNodeMode || !mod || !mod.__esModule ? __defProp(target2, "default", { value: mod, enumerable: !0 }) : target2,
     mod
   ));
 
@@ -1619,6 +1619,102 @@ Minimum version required to store current data is: ` + bestVersion + `.
     }
   });
 
+  // src/remote-host-reference.ts
+  var prefix = "dsh-remote-host:";
+  function target(value) {
+    if (!value || typeof value != "object" || Array.isArray(value)) throw new Error("INVALID_REMOTE_HOST_REFERENCE");
+    let row = value;
+    if (Object.keys(row).length !== 2 || typeof row.server != "string" || row.server.length < 1 || row.server.length > 2048 || typeof row.hostId != "string" || row.hostId.length < 1 || row.hostId.length > 256) throw new Error("INVALID_REMOTE_HOST_REFERENCE");
+    return { server: row.server, hostId: row.hostId };
+  }
+  function encodeHostMention(server, hostId) {
+    return prefix + encodeURIComponent(JSON.stringify(target({ server, hostId })));
+  }
+  function decodeHostMention(ref) {
+    if (ref.length > 8192 || !ref.startsWith(prefix)) throw new Error("INVALID_REMOTE_HOST_REFERENCE");
+    let value = target(JSON.parse(decodeURIComponent(ref.slice(prefix.length))));
+    if (encodeHostMention(value.server, value.hostId) !== ref) throw new Error("INVALID_REMOTE_HOST_REFERENCE");
+    return value;
+  }
+
+  // src/client/host-mentions.ts
+  function createHostMentionSource(control, chinese, openRemote = () => {
+  }) {
+    let claims = /* @__PURE__ */ new Map(), copy = (zh2, en2) => chinese() ? zh2 : en2;
+    function claim(host) {
+      let operationId = `mention_${crypto.randomUUID()}`, submitted, prepared = control("mention.default", { ref: host.ref }).then((workspace) => ({ workspace }), () => ({ workspace: void 0 })), label = host.name.replace(/\s+/g, " ").trim();
+      return {
+        name: "remote",
+        token: `/remote ${label} `,
+        attachments: !1,
+        hint: copy(`\u76F4\u63A5\u53D1\u9001\u5230 ${label}\uFF1B\u4F7F\u7528\u9ED8\u8BA4\u5DE5\u4F5C\u533A`, `Send directly to ${label}; use the default workspace`),
+        async submit(message, _context, attachments) {
+          if (attachments.length) return { kind: "error", text: copy("\u8FDC\u7A0B\u6D3E\u53D1\u6682\u4EC5\u652F\u6301\u6587\u5B57\u3002", "Remote dispatch currently accepts text only.") };
+          if (!message.trim()) return { kind: "error", text: copy("\u8BF7\u8F93\u5165\u8981\u53D1\u7ED9\u8FDC\u7AEF\u7684\u6D88\u606F\u3002", "Enter a message for the remote Agent.") };
+          if (submitted !== void 0 && submitted !== message) return {
+            kind: "error",
+            text: copy("\u6B64\u6295\u9012\u5DF2\u5F00\u59CB\uFF0C\u8BF7\u5148\u68C0\u67E5\u8FDC\u7AEF\u4F1A\u8BDD\uFF0C\u518D\u91CD\u65B0\u9009\u62E9\u76EE\u6807\u3002", "This delivery has started. Inspect the remote session before selecting a new target.")
+          };
+          try {
+            let { workspace } = await prepared;
+            if (!workspace) return { kind: "error", text: copy("\u8FDE\u63A5\u6216\u9ED8\u8BA4\u5DE5\u4F5C\u533A\u51C6\u5907\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9\u4E3B\u673A\u3002", "Connection or default workspace preparation failed. Select the Host again.") };
+            submitted = message;
+            let target2 = { ref: host.ref, workspaceId: workspace.workspaceId }, receipt = await control("mention.dispatch", { ...target2, operationId, message });
+            return receipt.status !== "accepted" || !receipt.sessionId ? {
+              kind: "error",
+              text: copy("\u8FDC\u7AEF\u6295\u9012\u672A\u786E\u8BA4\uFF0C\u8BF7\u68C0\u67E5 Remote \u4F1A\u8BDD\uFF0C\u52FF\u91CD\u590D\u521B\u5EFA\u4EFB\u52A1\u3002", "Remote delivery is unconfirmed. Inspect Remote sessions; do not create the task again.")
+            } : (await control("mention.open", { ...target2, sessionId: receipt.sessionId }), openRemote(), { kind: "success" });
+          } catch {
+            return { kind: "error", text: copy("\u672A\u80FD\u5B8C\u6210\u8FDC\u7A0B\u6295\u9012\u6216\u6253\u5F00\u4F1A\u8BDD\u3002\u91CD\u8BD5\u5C06\u590D\u7528\u540C\u4E00\u64CD\u4F5C\u56DE\u6267\uFF1B\u8BF7\u52FF\u91CD\u65B0\u521B\u5EFA\u4EFB\u52A1\u3002", "Remote delivery or navigation failed. Retrying reuses the operation receipt; do not create the task again.") };
+          }
+        }
+      };
+    }
+    return {
+      trigger: "@",
+      name: "remote-host",
+      order: -10,
+      showGroupTitle: !1,
+      async candidates(_session, request) {
+        if (request.position === "inline" || request.quoted || request.signal.aborted) return [];
+        let hosts = await control("mention.hosts");
+        request.signal.throwIfAborted();
+        let query = request.query.toLocaleLowerCase();
+        return hosts.filter((host) => `${host.name} ${host.hostId}`.toLocaleLowerCase().includes(query)).slice(0, 30).map((host) => ({
+          name: host.name,
+          label: host.name,
+          description: host.platform,
+          section: copy("\u53D1\u9001\u5230\u8FDC\u7A0B\u4E3B\u673A", "Send to Remote Host"),
+          value: JSON.stringify(host)
+        }));
+      },
+      onPick({ candidate, session, position }) {
+        if (!candidate.value || position === "inline") return;
+        let host = JSON.parse(candidate.value);
+        decodeHostMention(host.ref);
+        let command = claim(host);
+        return claims.set(session.sessionId, command), { claim: command };
+      },
+      // Harness 0.2.1 only adjudicates slash-prefixed plain drafts. Use its native
+      // command form so restored drafts cannot silently fall through to a local model.
+      async matchEnter(session, line, _signal, envelope) {
+        if (!/^\/remote(?:\s|$)/.test(line)) return;
+        let command = claims.get(session.sessionId);
+        if (!command || !(line.startsWith(command.token) || line === command.token.trimEnd())) throw new Error(copy("\u8BF7\u4ECE @ \u83DC\u5355\u91CD\u65B0\u9009\u62E9\u8FDC\u7A0B\u4E3B\u673A\u3002", "Select the Remote Host again from @."));
+        if (envelope.attachments) throw new Error(copy("\u8FDC\u7A0B\u6D3E\u53D1\u6682\u4EC5\u652F\u6301\u6587\u5B57\u3002", "Remote dispatch currently accepts text only."));
+        return { claim: command };
+      },
+      codec: {
+        clipboardText(ref) {
+          return decodeHostMention(ref), ref;
+        },
+        async serialize(_ref, _signal) {
+          throw new Error(copy("\u65E7\u4E3B\u673A\u5F15\u7528\u5DF2\u505C\u7528\uFF0C\u8BF7\u5220\u9664\u540E\u4ECE @ \u83DC\u5355\u91CD\u65B0\u9009\u62E9\u3002", "Legacy Host reference retired. Remove it and select the target again from @."));
+        }
+      }
+    };
+  }
+
   // src/client-locale.ts
   var localeNamespace = "ds-harness-remote", en = {
     terminalRemote: "Remote terminal",
@@ -3153,8 +3249,8 @@ Minimum version required to store current data is: ` + bestVersion + `.
       }, [open, devicesOpen]), React.useEffect(() => {
         if (!devicesOpen) return;
         let closeOnPointer = (event) => {
-          let target = event.target;
-          target instanceof Element && target.closest(".dshRemoteConnectedMenu") === null && setDevicesOpen(!1);
+          let target2 = event.target;
+          target2 instanceof Element && target2.closest(".dshRemoteConnectedMenu") === null && setDevicesOpen(!1);
         };
         return window.addEventListener("mousedown", closeOnPointer), () => window.removeEventListener("mousedown", closeOnPointer);
       }, [devicesOpen]), React.useEffect(() => {
@@ -4757,7 +4853,26 @@ Minimum version required to store current data is: ` + bestVersion + `.
           }
           if (!result.ok) throw new Error(result.error?.message ?? t("remoteRequestFailed"));
           return result.value;
-        }, statusFeed = createStatusFeed({
+        };
+        ctx.inject(["inputTriggers"], (scope) => {
+          let triggers = scope.get("inputTriggers");
+          triggers && scope.effect(() => {
+            let source = createHostMentionSource(
+              control,
+              () => ctx.locale.getLocale().active === "zh",
+              () => {
+                let connection = ctx.connection;
+                if (typeof connection.reconnect != "function") throw new Error("Native connection reconnect is unavailable.");
+                connection.reconnect();
+              }
+            ), unregister = triggers.registerSource(source), guard = triggers.registerSource({ ...source, trigger: "/", name: "remote-dispatch", candidates: async () => [], onPick: () => {
+            } });
+            return () => {
+              guard(), unregister();
+            };
+          }, "ds-harness-remote: host mentions");
+        });
+        let statusFeed = createStatusFeed({
           url: STATUS_STREAM_PATH.slice(1),
           readStatus: () => control("status"),
           onFallback: (reason) => {
@@ -4773,7 +4888,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
             if (isVirtualBackend && pending.sessionId !== void 0 && sessionSnapshot.phase !== "ready") return;
             opening = !0, unsubscribeWorkspaces?.(), unsubscribeSessions?.(), unsubscribeWorkspaces = void 0, unsubscribeSessions = void 0;
             let navigation = ctx.get("uiWorkspace"), connectWorkspace = (workspaceId) => navigation !== void 0 ? navigation.connectWorkspace(workspaceId) : ctx.workspaces.connectWorkspace(workspaceId);
-            (isVirtualBackend && pending.sessionId !== void 0 && sessionSnapshot.ids.includes(pending.sessionId) ? Promise.resolve(pending.sessionId) : connectWorkspace(pending.workspaceId)).then(async (sessionId) => {
+            (pending.backend === "harness" && pending.sessionId !== void 0 || isVirtualBackend && pending.sessionId !== void 0 && sessionSnapshot.ids.includes(pending.sessionId) ? Promise.resolve(pending.sessionId) : connectWorkspace(pending.workspaceId)).then(async (sessionId) => {
               if (!disposed) {
                 if (navigation !== void 0)
                   navigation.openSession(sessionId);
@@ -4789,13 +4904,12 @@ Minimum version required to store current data is: ` + bestVersion + `.
             }).catch((reason) => {
               disposed || console.warn("remote workspace selection failed:", reason);
             });
-          };
-          return control("status").then((status) => {
+          }, unsubscribeStatus = statusFeed.subscribe((status) => {
             let pending = status.workspaceSelection ?? storedWorkspaceSelection();
-            disposed || status.mode !== "remote" || pending === void 0 || status.target?.deviceId !== pending.targetDeviceId || (selection = pending, unsubscribeWorkspaces = ctx.workspaces.list.subscribe(reconcile), unsubscribeSessions = ctx.sessions.list.subscribe(reconcile), reconcile());
-          }).catch(() => {
-          }), () => {
-            disposed = !0, unsubscribeWorkspaces?.(), unsubscribeSessions?.();
+            disposed || status.mode !== "remote" || pending === void 0 || status.target?.deviceId !== pending.targetDeviceId || selection?.targetDeviceId === pending.targetDeviceId && selection.workspaceId === pending.workspaceId && selection.sessionId === pending.sessionId || (unsubscribeWorkspaces?.(), unsubscribeSessions?.(), opening = !1, selection = pending, unsubscribeWorkspaces = ctx.workspaces.list.subscribe(reconcile), unsubscribeSessions = ctx.sessions.list.subscribe(reconcile), reconcile());
+          });
+          return () => {
+            unsubscribeStatus(), disposed = !0, unsubscribeWorkspaces?.(), unsubscribeSessions?.();
           };
         }, "ds-harness-remote: resume selected workspace"), ctx.inject(["fileViewer"], (fileViewerContext) => {
           let viewer = fileViewerContext.get("fileViewer");

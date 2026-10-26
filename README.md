@@ -39,7 +39,7 @@ DS Harness Remote is simply another window into that environment.
 
 The DeepSeek Harness desktop edition is supported. Install the latest release:
 
-`ds-harness-remote@0.5.19`
+`ds-harness-remote@0.5.21`
 
 ## Contents
 
@@ -63,6 +63,9 @@ The DeepSeek Harness desktop edition is supported. Install the latest release:
 
 ## Features
 
+- In a local Desktop/web conversation with native `inputTriggers` support, start with `@`, select an online machine, then describe the task. The input shows `/remote HostName`; selection immediately connects and prepares the remote default workspace. Sending waits for that preparation and then delivers the message. The plugin sends your original text directly to a new remote session and opens it in the native Remote UI; the local model does not coordinate the task. Selection alone does not dispatch. This entry currently accepts text only. Sign in through the local Remote panel first.
+- Native Harness Agents can use `remote_list_hosts` and `remote_list_workspaces` to discover online Hosts and their existing workspaces after signing in through the local Remote panel. Native Harness session tools also list/read/create sessions, send text tasks, wait for execution and request interruption, with operation receipts for uncertain writes. Queries reuse encrypted Remote connections without switching the UI; returned metadata and requested history enter the calling Agent’s tool context. CodeX/ACP session operations and an external MCP entry are not included.
+
 Harness automation tasks are available through the native Desktop/browser UI over Remote: view tasks and delivery history, edit timing/name/instructions, and delete tasks. Create tasks through the official `schedule_create` Agent tool. Tasks remain stored and executed on the Host; update the Host Remote plugin to enable management.
 
 - Access your local Harness instance remotely from the web, a PC, or a mobile device: DSH first, with Codex, Cursor, and Antigravity support too.
@@ -81,7 +84,7 @@ Harness automation tasks are available through the native Desktop/browser UI ove
 
 | Client | Form | Status | Notes |
 | --- | --- | --- | --- |
-| DSH&nbsp;Desktop&nbsp;plugin | Remote sidebar inside DeepSeek Harness Desktop | Supported | Install `ds-harness-remote@0.5.19`; this computer can also be the Host |
+| DSH&nbsp;Desktop&nbsp;plugin | Remote sidebar inside DeepSeek Harness Desktop | Supported | Install `ds-harness-remote@0.5.21`; this computer can also be the Host |
 | Remote&nbsp;Web | Browser page | Supported | Open [dsh.r2049.cn/app](https://dsh.r2049.cn/app); reuses the native Harness interface |
 | Android | Native app | Supported | Download the APK from [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest); see the [Android guide](apps/android/README.md) |
 | iOS | TestFlight beta | Beta | Not publicly released; see [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
@@ -98,10 +101,10 @@ Several clients can connect to the same Host at once; RPC calls and streams are 
 Open **Extensions / Plugin management** in DeepSeek Harness Desktop, choose installation
 from npm, and enter this package:
 
-`ds-harness-remote@0.5.19`
+`ds-harness-remote@0.5.21`
 
 Restart Desktop afterward. Its official `dsh` launcher can also install the pinned package
-with `dsh plugin --profile desktop add -w ds-harness-remote@0.5.19`.
+with `dsh plugin --profile desktop add -w ds-harness-remote@0.5.21`.
 
 ### dsh-TUI Host
 
@@ -113,7 +116,7 @@ For terminal Host setup with [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI), 
 Add the exact package version through DSH's plugin manager for the `web` profile:
 
 ```sh
-dsh plugin --profile web add -w ds-harness-remote@0.5.19
+dsh plugin --profile web add -w ds-harness-remote@0.5.21
 ```
 
 Restart DeepSeek Harness after installation.

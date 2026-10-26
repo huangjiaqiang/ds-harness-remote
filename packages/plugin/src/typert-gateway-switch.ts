@@ -35,6 +35,7 @@ interface RuntimeGateway extends TypertGatewayLike {
 
 const REMOTE_COMMAND_METHODS = ['execute', 'list'] as const
 const LOCAL_ONLY_NAMESPACES = new Set(['dynamicCordisRunner'])
+const LOCAL_SETTINGS = new Set(['ui-settings-account'])
 
 export interface RemoteCommandSupport {
   execute: boolean
@@ -121,10 +122,17 @@ export class TypertGatewaySwitch {
         const [endpoint, payload, signal] = args
         // The local Gateway owns the caller's Peer and its lifetime. Preserve
         // every carrier argument; Peer objects never cross the Remote tunnel.
-        return this.remoteTarget === undefined || isLocalOnlyEndpoint(endpoint)
+        return this.remoteTarget === undefined || isLocalOnlyEndpoint(endpoint) || isLocalSettingWrite(endpoint, payload)
           ? this.localDispatch!(...args)
           : this.remoteTarget.dispatch(endpoint, payload, signal).then(
-            result => workspaceConnectionResult(endpoint, result),
+            async result => {
+              if (endpoint === 'settings/describe' && result.ok) {
+                const local = await this.localDispatch!(...args)
+                if (!local.ok) return local
+                return { ...result, value: localSettingsView(result.value, local.value) }
+              }
+              return workspaceConnectionResult(endpoint, result)
+            },
             error => ({ ok: false, error: this.failure(error) }),
           )
       }
@@ -198,7 +206,10 @@ export class TypertGatewaySwitch {
   }
 
   private selectInvoke(request: TypertGatewayRequest): Promise<unknown> {
-    if (isLocalOnlyEndpoint(endpointOf(request))) return this.localInvoke(request)
+    if (isLocalOnlyEndpoint(endpointOf(request)) || isLocalSettingWrite(endpointOf(request), { args: request.args })) return this.localInvoke(request)
+    if (this.remoteTarget !== undefined && endpointOf(request) === 'settings/describe') {
+      return Promise.all([this.remoteTarget.invoke(request), this.localInvoke(request)]).then(([remote, local]) => localSettingsView(remote, local))
+    }
     if (this.remoteTarget !== undefined) return this.remoteTarget.invoke(request).then(value => normalizeTerminalEnvironment(endpointOf(request), value))
     if (request.namespace !== 'commands' || !isRemoteCommandMethod(request.method) || this.remoteInvoke === undefined) {
       return this.localInvoke(request)
@@ -318,4 +329,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function normalizeTerminalEnvironment(endpoint: string, value: unknown): unknown {
   if (endpoint !== 'terminal/environment' || !isRecord(value) || value.maxBufferedBytes !== undefined) return value
   return { ...value, maxBufferedBytes: 256 * 1024 }
+}
+
+/** Onboarding belongs to this Desktop installation, not the selected compute Host. */
+function localSettingsView(remote: unknown, local: unknown): unknown {
+  if (!isRecord(remote) || !Array.isArray(remote.namespaces) || !isRecord(local) || !Array.isArray(local.namespaces)) return remote
+  const rows = local.namespaces.filter(row => isRecord(row) && typeof row.ns === 'string' && LOCAL_SETTINGS.has(row.ns))
+  return { ...remote, namespaces: [...remote.namespaces.filter(row => !isRecord(row) || typeof row.ns !== 'string' || !rows.some(local => local.ns === row.ns)), ...rows] }
+}
+function isLocalSettingWrite(endpoint: string, payload: unknown): boolean {
+  return ['settings/update', 'settings/replace', 'settings/mutate'].includes(endpoint)
+    && isRecord(payload) && isRecord(payload.args) && typeof payload.args.ns === 'string' && LOCAL_SETTINGS.has(payload.args.ns)
 }

@@ -1,3 +1,4 @@
+import { createHostMentionSource } from './client/host-mentions.js'
 import type { Translate } from './client-locale.js'
 import { en, localeNamespace, zh } from './client-locale.js'
 import { createRemoteSessionHeaderAction } from './client/header.js'
@@ -335,6 +336,21 @@ window.__ModuleLoader__.load({
         if (!result.ok) throw new Error(result.error?.message ?? t('remoteRequestFailed'))
         return result.value as T
       }
+      ctx.inject(['inputTriggers'], scope => {
+        const triggers = scope.get<{ registerSource(source: Omit<ReturnType<typeof createHostMentionSource>, 'trigger'> & { trigger: '/' | '@' }): () => void }>('inputTriggers')
+        if (!triggers) return
+        scope.effect(() => {
+          const source = createHostMentionSource(control, () => ctx.locale.getLocale().active === 'zh',
+            () => {
+              const connection = ctx.connection as typeof ctx.connection & { reconnect?: () => void }
+              if (typeof connection.reconnect !== 'function') throw new Error('Native connection reconnect is unavailable.')
+              connection.reconnect()
+            })
+          const unregister = triggers.registerSource(source)
+          const guard = triggers.registerSource({ ...source, trigger: '/' as const, name: 'remote-dispatch', candidates: async () => [], onPick: () => undefined })
+          return () => { guard(); unregister() }
+        }, 'ds-harness-remote: host mentions')
+      })
       // One pushed status stream feeds every Host-status render in this page.
       // Hosts without the event stream keep answering the unary status control
       // call, which the feed itself polls at the interval this replaced.
@@ -375,7 +391,9 @@ window.__ModuleLoader__.load({
           const connectWorkspace = (workspaceId: string): Promise<string> => navigation !== undefined
             ? navigation.connectWorkspace(workspaceId)
             : ctx.workspaces.connectWorkspace(workspaceId)
-          const open = isVirtualBackend && pending.sessionId !== undefined
+          const open = pending.backend === 'harness' && pending.sessionId !== undefined
+            ? Promise.resolve(pending.sessionId)
+            : isVirtualBackend && pending.sessionId !== undefined
             ? sessionSnapshot.ids.includes(pending.sessionId)
               ? Promise.resolve(pending.sessionId)
               : connectWorkspace(pending.workspaceId)
@@ -401,17 +419,23 @@ window.__ModuleLoader__.load({
           })
         }
 
-        void control<RemoteStatus>('status').then(status => {
+        const unsubscribeStatus = statusFeed.subscribe(status => {
           const pending = status.workspaceSelection ?? storedWorkspaceSelection()
           if (disposed || status.mode !== 'remote' || pending === undefined
             || status.target?.deviceId !== pending.targetDeviceId) return
+          if (selection?.targetDeviceId === pending.targetDeviceId && selection.workspaceId === pending.workspaceId
+            && selection.sessionId === pending.sessionId) return
+          unsubscribeWorkspaces?.()
+          unsubscribeSessions?.()
+          opening = false
           selection = pending
           unsubscribeWorkspaces = ctx.workspaces.list.subscribe(reconcile)
           unsubscribeSessions = ctx.sessions.list.subscribe(reconcile)
           reconcile()
-        }).catch(() => undefined)
+        })
 
         return () => {
+          unsubscribeStatus()
           disposed = true
           unsubscribeWorkspaces?.()
           unsubscribeSessions?.()

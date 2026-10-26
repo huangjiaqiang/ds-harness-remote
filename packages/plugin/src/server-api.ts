@@ -364,14 +364,14 @@ export class HostServerApi {
     })
   }
 
-  async listDevices(): Promise<ServerHostDevice[]> {
-    const result = await this.request<{ items?: unknown }>('/api/v1/devices')
+  async listDevices(signal?: AbortSignal): Promise<ServerHostDevice[]> {
+    const result = await this.request<{ items?: unknown }>('/api/v1/devices', { signal })
     if (!Array.isArray(result.items)) throw new ServerApiError('INVALID_MESSAGE', 'The Server returned an invalid device list.', false)
     return result.items.map(parseHostDevice)
   }
 
-  async deviceFor(peerDeviceId: string): Promise<AuthorizedPeerDevice> {
-    const result = await this.request<unknown>(`/api/v1/devices/${encodeURIComponent(peerDeviceId)}`)
+  async deviceFor(peerDeviceId: string, signal?: AbortSignal): Promise<AuthorizedPeerDevice> {
+    const result = await this.request<unknown>(`/api/v1/devices/${encodeURIComponent(peerDeviceId)}`, { signal })
     return parseAuthorizedPeer(result)
   }
 
@@ -383,8 +383,8 @@ export class HostServerApi {
     return result.iceServers.map(parseIceServer)
   }
 
-  async presenceFor(deviceId: string): Promise<{ online: boolean; lastSeenAt?: number }> {
-    const result = await this.request<Record<string, unknown>>(`/api/v1/devices/${encodeURIComponent(deviceId)}/presence`)
+  async presenceFor(deviceId: string, signal?: AbortSignal): Promise<{ online: boolean; lastSeenAt?: number }> {
+    const result = await this.request<Record<string, unknown>>(`/api/v1/devices/${encodeURIComponent(deviceId)}/presence`, { signal })
     if (typeof result.online !== 'boolean'
       || (result.lastSeenAt !== null && result.lastSeenAt !== undefined && !Number.isSafeInteger(result.lastSeenAt))) {
       throw new ServerApiError('INVALID_MESSAGE', 'The Server returned invalid device presence.', false)

@@ -51,11 +51,13 @@ export interface ClientConnectionContext {
 export class ClientConnection {
   constructor(private readonly context: ClientConnectionContext) {}
 
-  async connect(targetDeviceId: string, signal?: AbortSignal): Promise<ConnectedRemote> {
+  async connect(targetDeviceId: string, signal?: AbortSignal, options: { background?: boolean } = {}): Promise<ConnectedRemote> {
     signal?.throwIfAborted()
-    const progressRunId = this.context.connectionProgressRun + 1
-    this.context.connectionProgressRun = progressRunId
-    this.context.connectionProgress = { runId: progressRunId, targetDeviceId, phase: 'checking-host' }
+    const progressRunId = options.background ? -1 : this.context.connectionProgressRun + 1
+    if (!options.background) {
+      this.context.connectionProgressRun = progressRunId
+      this.context.connectionProgress = { runId: progressRunId, targetDeviceId, phase: 'checking-host' }
+    }
     const identity = this.context.requireIdentity()
     let client: RemoteClientCore | undefined
     // Keep cancellation attached through capability discovery as well as the
@@ -63,15 +65,15 @@ export class ClientConnection {
     const onAbort = () => { void client?.close().catch(() => undefined) }
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      const serverDevice = (await this.context.server.listDevices()).find(device => device.deviceId === targetDeviceId)
+      const serverDevice = (await this.context.server.listDevices(signal)).find(device => device.deviceId === targetDeviceId)
       signal?.throwIfAborted()
       if (serverDevice === undefined) {
         throw new ClientModeError('MEMBERSHIP_REQUIRED', 'The selected Host is not authorized for this account.')
       }
       this.updateConnectionProgress(progressRunId, 'authorizing-peer')
-      const target = await this.authorizeHostPeer(serverDevice)
+      const target = await this.authorizeHostPeer(serverDevice, signal)
       signal?.throwIfAborted()
-      const presence = await this.context.server.presenceFor(targetDeviceId)
+      const presence = await this.context.server.presenceFor(targetDeviceId, signal)
       signal?.throwIfAborted()
       if (!presence.online) throw new ClientModeError('HOST_OFFLINE', 'The selected Host is offline.', true)
       const credentials = await this.context.server.authenticate(identity)
@@ -122,7 +124,7 @@ export class ClientConnection {
       let transport: AdaptiveTransport | undefined
       for (const attempt of attempts) {
         webRtcFallback = false
-        const stopProgressTimer = this.beginAttemptProgress(progressRunId, attempt)
+        const stopProgressTimer = options.background ? () => undefined : this.beginAttemptProgress(progressRunId, attempt)
         try {
           transport = createTransport(attempt)
           client = new RemoteClientCore(new ClientSecureTransport(transport, identity, target), 60_000)
@@ -155,7 +157,7 @@ export class ClientConnection {
         connectedPreference === undefined ? undefined : [connectedPreference],
       )
       connectedClient.onClose(() => {
-        if (this.context.connected?.client !== connectedClient) return
+        if (options.background || this.context.connected?.client !== connectedClient) return
         void this.context.closePreview()
         this.context.connected = undefined
         this.context.connectionProgress = undefined
@@ -239,8 +241,9 @@ export class ClientConnection {
     if (this.context.connectionProgress?.runId === runId) this.context.connectionProgress = undefined
   }
 
-  async authorizeHostPeer(serverDevice: ServerHostDevice): Promise<TrustedPeer> {
-    const descriptor = await this.context.server.deviceFor(serverDevice.deviceId)
+  async authorizeHostPeer(serverDevice: ServerHostDevice, signal?: AbortSignal): Promise<TrustedPeer> {
+    const descriptor = await this.context.server.deviceFor(serverDevice.deviceId, signal)
+    signal?.throwIfAborted()
     assertAuthorizedHost(serverDevice, descriptor)
     const existing = this.context.identities.trustedPeer(descriptor.deviceId)
     if (existing !== undefined && existing.publicKey !== descriptor.identityKey) {

@@ -1,3 +1,6 @@
+import { dispatchMention, mentionTarget } from './remote-mention-dispatch.js'
+import { z } from 'zod'
+import { handleHostMention } from './remote-host-mention.js'
 import type { ControlResult } from './control-result.js'
 import { CodexRemoteClient } from '@dsh-remote/client-core'
 import type { PluginRouteCallResult } from '@dsh-remote/protocol'
@@ -22,8 +25,12 @@ import { ClientServerApi } from './server-api.js'
 
 /** Collaborates with one ClientModeRuntime; never creates a second session or connection state. */
 export interface ClientControlContext {
+  readonly runSessionTool: (operation: import('./remote-session-tools.js').SessionToolOperation, input: unknown, signal: AbortSignal) => Promise<unknown>
+  readonly discoverToolWorkspaces: (hostId: string, signal: AbortSignal) => Promise<{ workspaces: Array<{ backend: string; workspaceId: string; title: string; path: string }>; unavailable: unknown[] }>
+  readonly defaultMentionWorkspace: (hostId: string, signal: AbortSignal) => Promise<unknown>
+  readonly openMentionSession: (hostId: string, workspaceId: string, sessionId: string, signal: AbortSignal) => Promise<unknown>
   readonly detailedStatus: () => Promise<Record<string, unknown>>
-  readonly devices: () => Promise<RemoteDeviceView[]>
+  readonly devices: (signal?: AbortSignal) => Promise<RemoteDeviceView[]>
   readonly server: ClientServerApi
   readonly authorizeClientWithAccount: (email: string, password: string) => Promise<unknown>
   readonly startClientOAuthQrLogin: (provider: OAuthProvider) => Promise<unknown>
@@ -58,7 +65,22 @@ export class ClientControl {
 
   async handleControl(endpoint: string, payload: unknown, signal: AbortSignal): Promise<ControlResult<unknown>> {
     try {
+      if (endpoint === 'mention.default') {
+        const args = z.object({ ref: z.string().max(8192) }).strict().parse(payload)
+        const host = await handleHostMention(this.context.server.baseUrl, this.context.devices, 'resolve', args, signal) as { hostId: string }
+        return ok(await this.context.defaultMentionWorkspace(host.hostId, signal))
+      }
+      if (endpoint === 'mention.dispatch') return ok(await dispatchMention(this.context.server.baseUrl, payload, this.context.runSessionTool, signal))
+      if (endpoint === 'mention.open') {
+        const args = mentionTarget.extend({ sessionId: z.string().min(1).max(256) }).parse(payload)
+        const host = await handleHostMention(this.context.server.baseUrl, this.context.devices, 'resolve', { ref: args.ref }, signal) as { hostId: string }
+        return ok(await this.context.openMentionSession(host.hostId, args.workspaceId, args.sessionId, signal))
+      }
       if (endpoint === 'status') return ok(await this.context.detailedStatus())
+      if (endpoint === 'mention.hosts' || endpoint === 'mention.resolve') {
+        return ok(await handleHostMention(this.context.server.baseUrl, this.context.devices,
+          endpoint === 'mention.hosts' ? 'hosts' : 'resolve', payload, signal))
+      }
       if (endpoint === 'devices') return ok(await this.context.devices())
       if (endpoint === 'client.account.providers') return ok(await this.context.server.oauthProviders())
       if (endpoint === 'client.account.login') {
