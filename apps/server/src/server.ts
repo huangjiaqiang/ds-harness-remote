@@ -7,8 +7,9 @@ import { z } from 'zod'
 import { deviceRegistrationRequestSchema, deviceRefreshRequestSchema } from '@dsh-remote/protocol'
 import { ApiError, Store, equal, hash, secret } from './store.js'
 import { Gateway } from './gateway.js'
+import { defaultIceConfig, iceServersFor, type IceConfig } from './ice.js'
 
-export interface Config { account: string; password: string; dataFile: string; publicUrl: string }
+export interface Config { account: string; password: string; dataFile: string; publicUrl: string; ice?: IceConfig }
 const loginSchema = z.object({ email: z.string().min(1).max(254), password: z.string().min(1).max(1024) }).strict()
 const publicDir = fileURLToPath(new URL('../dist/public/', import.meta.url))
 function readAssets(): Map<string, Buffer> {
@@ -38,6 +39,7 @@ export function createRemoteServer(config: Config) {
   const url = new URL(config.publicUrl)
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('DSH_SERVER_PUBLIC_URL must be an HTTP(S) origin.')
   const store = new Store(config.dataFile, config.account.trim(), config.password)
+  const ice = config.ice ?? defaultIceConfig()
   const assets = readAssets()
   const sessions = new Map<string, number>()
   const limits = new Map<string, { count: number; until: number }>()
@@ -79,7 +81,8 @@ export function createRemoteServer(config: Config) {
     return { ...d.descriptor, membershipId: `account:${hash(store.account).slice(0, 16)}`, online: gateway.peers.has(d.descriptor.deviceId), lastSeenAt: d.lastSeenAt }
   }
   async function route(req: IncomingMessage, res: ServerResponse) {
-    const path = new URL(req.url ?? '/', url).pathname
+    const requestUrl = new URL(req.url ?? '/', url)
+    const path = requestUrl.pathname
     const method = req.method
     if (req.headers.origin && req.headers.origin !== url.origin) throw new ApiError('AUTH_INVALID', 403)
     if (req.headers['sec-fetch-site'] === 'cross-site') throw new ApiError('AUTH_INVALID', 403)
@@ -110,7 +113,7 @@ export function createRemoteServer(config: Config) {
       sessions.delete(hash(token(req))); res.setHeader('Set-Cookie', cookie('', 0)); json(res, 200, { status: 'ok' }); return
     }
     if (method === 'GET' && path === '/api/v1/account/devices') {
-      accountAuth(req); json(res, 200, { items: store.list().map(descriptor), serverUrl: url.origin, transport: 'relay' }); return
+      accountAuth(req); json(res, 200, { items: store.list().map(descriptor), serverUrl: url.origin, transport: 'webrtc' }); return
     }
     if (method === 'POST' && (path === '/api/v1/devices/register' || path === '/api/v1/devices/register-owned-role')) {
       const source = path.endsWith('register-owned-role') ? deviceAuth(req) : undefined
@@ -127,6 +130,14 @@ export function createRemoteServer(config: Config) {
       store.revoke(deviceAuth(req).descriptor.deviceId); json(res, 200, { status: 'revoked' }); return
     }
     if (method === 'GET' && path === '/api/v1/me') { json(res, 200, descriptor(deviceAuth(req))); return }
+    if (method === 'GET' && path === '/api/v1/turn/credentials') {
+      const source = deviceAuth(req)
+      const connectionId = requestUrl.searchParams.get('connection_id')
+      if (connectionId === null || !gateway.isParticipant(connectionId, source.descriptor.deviceId)) {
+        throw new ApiError('CONNECTION_NOT_FOUND', 404)
+      }
+      json(res, 200, { iceServers: iceServersFor(ice, source.descriptor.deviceId) }); return
+    }
     if (method === 'GET' && path === '/api/v1/devices') {
       const source = deviceAuth(req)
       if (source.descriptor.role !== 'client') throw new ApiError('MEMBERSHIP_REQUIRED', 403)

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { Server } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
-import { createControlFrame, decodeControlFrame, MAX_CONTROL_FRAME_BYTES, MAX_RELAY_FRAME_BYTES, type ControlFrame, type HelloPayload, type ConnectRequestPayload, type SecureHandshakePayload, type RelayPayload, type TransportSelectedPayload } from '@dsh-remote/protocol'
+import { createControlFrame, decodeControlFrame, MAX_CONTROL_FRAME_BYTES, MAX_RELAY_FRAME_BYTES, transportCapabilities, type ControlFrame, type HelloPayload, type ConnectRequestPayload, type SecureHandshakePayload, type RelayPayload, type SelectedTransport, type TransportSelectedPayload } from '@dsh-remote/protocol'
 import { ApiError, Store } from './store.js'
 
 type Peer = { ws: WebSocket; id: string; role: 'host' | 'client'; capabilities: string[]; version: string; lastPong: number; nonce?: string }
-type Link = { id: string; host: string; client: string; stage: 'pending' | 'accepted' | 'handshake' | 'ready'; created: number; counters: Map<string, number> }
+type Link = { id: string; host: string; client: string; stage: 'pending' | 'accepted' | 'handshake' | 'ready'; created: number; counters: Map<string, number>; preferredTransports: SelectedTransport[] }
 function modernHost(version: string): boolean {
   const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\+.*)?$/.exec(version)
   if (!match) return false
@@ -54,6 +54,11 @@ export class Gateway {
     for (const link of this.links.values()) if (link.host === id || link.client === id) this.drop(link, code)
     if (peer) { peer.ws.close(code === 'CONNECTION_REPLACED' ? 4003 : 4001, code); setTimeout(() => peer.ws.terminate(), 1000).unref() }
   }
+  isParticipant(connectionId: string, deviceId: string): boolean {
+    const link = this.links.get(connectionId)
+    return link !== undefined && link.stage !== 'pending'
+      && (link.host === deviceId || link.client === deviceId)
+  }
   private accept(ws: WebSocket): void {
     let peer: Peer | undefined
     const deadline = setTimeout(() => ws.terminate(), 5000)
@@ -81,11 +86,12 @@ export class Gateway {
           if (device.deviceId !== p.deviceId || device.role !== p.role) throw new ApiError('AUTH_INVALID')
           if (!p.protocols.includes(1)) throw new ApiError('UNSUPPORTED_VERSION')
           this.disconnect(device.deviceId, 'CONNECTION_REPLACED')
-          peer = { ws, id: device.deviceId, role: device.role, capabilities: p.capabilities, version: p.clientVersion ?? device.clientVersion, lastPong: Date.now() }
+          const capabilities = transportCapabilities.filter(capability => p.capabilities.includes(capability))
+          peer = { ws, id: device.deviceId, role: device.role, capabilities, version: p.clientVersion ?? device.clientVersion, lastPong: Date.now() }
           this.peers.set(peer.id, peer)
           clearTimeout(deadline)
           this.store.touch(peer.id, p.clientVersion, p.harnessVersion)
-          this.send(peer, createControlFrame('hello.ack', { protocol: 1, serverVersion: 'self-hosted/0.1.0', connectionSessionId: randomUUID(), heartbeatIntervalMs: 25000, maxControlFrameBytes: MAX_CONTROL_FRAME_BYTES, maxRelayFrameBytes: MAX_RELAY_FRAME_BYTES, capabilities: p.capabilities.includes('transport.relay') ? ['transport.relay'] : [], webrtcEnabled: false, webrtcFallbackTimeoutMs: 1 }))
+          this.send(peer, createControlFrame('hello.ack', { protocol: 1, serverVersion: 'self-hosted/0.2.0', connectionSessionId: randomUUID(), heartbeatIntervalMs: 25000, maxControlFrameBytes: MAX_CONTROL_FRAME_BYTES, maxRelayFrameBytes: MAX_RELAY_FRAME_BYTES, capabilities, webrtcEnabled: true, webrtcFallbackTimeoutMs: 12_000 }))
           return
         }
         if (this.peers.get(peer.id) !== peer) throw new ApiError('AUTH_INVALID')
@@ -120,12 +126,14 @@ export class Gateway {
       const host = this.peers.get(request.hostDeviceId)
       if (!host || host.role !== 'host') { this.send(peer, createControlFrame('error', { code: 'HOST_OFFLINE', message: 'Host is offline.', retryable: true })); return }
       this.store.get(host.id)
-      if (!request.preferredTransports.includes('relay') || !peer.capabilities.includes('transport.relay') || !host.capabilities.includes('transport.relay')) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
+      const preferredTransports = [...new Set(request.preferredTransports)].filter(transport =>
+        peer.capabilities.includes(`transport.${transport}`) && host.capabilities.includes(`transport.${transport}`))
+      if (preferredTransports.length === 0) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
       for (const old of this.links.values()) if (old.client === peer.id || (old.host === host.id && !modernHost(host.version))) this.drop(old, 'CONNECTION_REPLACED')
       if (this.links.size >= 256) throw new ApiError('RATE_LIMITED')
-      const link: Link = { id: randomUUID(), host: host.id, client: peer.id, stage: 'pending', created: Date.now(), counters: new Map() }
+      const link: Link = { id: randomUUID(), host: host.id, client: peer.id, stage: 'pending', created: Date.now(), counters: new Map(), preferredTransports }
       this.links.set(link.id, link)
-      this.send(host, createControlFrame('connect.incoming', { connectionId: link.id, clientDeviceId: peer.id, clientIdentityKey: this.store.get(peer.id).descriptor.identityKey, authorization: 'account', preferredTransports: ['relay'] }))
+      this.send(host, createControlFrame('connect.incoming', { connectionId: link.id, clientDeviceId: peer.id, clientIdentityKey: this.store.get(peer.id).descriptor.identityKey, authorization: 'account', preferredTransports }))
       return
     }
     const id = p.connectionId
@@ -144,11 +152,38 @@ export class Gateway {
     }
     if (p.targetDeviceId !== otherId || link.stage === 'pending') throw new ApiError('CONNECTION_NOT_FOUND')
     if (frame.type === 'transport.selected') {
-      if (peer.id !== link.client || (frame.payload as TransportSelectedPayload).transport !== 'relay') throw new ApiError('CAPABILITY_NOT_SUPPORTED')
-      if (modernHost(other.version)) this.send(other, frame)
+      const payload = frame.payload as TransportSelectedPayload
+      // protocol.md §11: a Host that never declared transport.lan only accepts
+      // the legacy values, so its LAN selection is forwarded as p2p.
+      const selected = payload.transport === 'lan'
+        && !link.preferredTransports.includes('lan')
+        && link.preferredTransports.includes('p2p')
+        ? 'p2p'
+        : payload.transport
+      // Both ends report the data plane they bound: the Client before starting
+      // Noise, the Host once its own data channel opens. Only the Client's
+      // report drives the link, so an out-of-set Host report is ignored rather
+      // than tearing down the connection it just established.
+      const negotiated = link.preferredTransports.includes(selected)
+      const fromClient = peer.id === link.client
+      if (fromClient && !negotiated) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
+      // The version gate is about Hosts that predate the frame: forwarding it
+      // to one is a protocol violation there. Clients have always sent it, so
+      // the Host's own report always reaches them.
+      if (!negotiated || (fromClient && !modernHost(other.version))) return
+      this.send(other, selected === payload.transport
+        ? frame
+        : createControlFrame('transport.selected', { ...payload, transport: selected }))
       return
     }
-    if (frame.type.startsWith('signal.')) return // Relay-only negotiation: no signaling forwarding.
+    // SDP/ICE only coordinate the data plane; the payload stays opaque to the
+    // Server and the authenticated channel is still established with Noise.
+    // Signaling for a transport the link never negotiated is dropped: the Host
+    // treats it as a protocol violation and closes its whole Control connection.
+    if (frame.type.startsWith('signal.')) {
+      if (link.preferredTransports.some(transport => transport !== 'relay')) this.send(other, frame)
+      return
+    }
     if (frame.type === 'secure.handshake') {
       const step = (frame.payload as SecureHandshakePayload).step
       if (step === 1 && peer.id === link.client && link.stage === 'accepted') link.stage = 'handshake'

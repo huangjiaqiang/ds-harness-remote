@@ -165,7 +165,7 @@ Android 客户端可原生渲染这些内容，并在 **插件 → Remote 适配
 
 默认使用本项目提供的[https://dsh.r2049.cn](https://dsh.r2049.cn)托管 Remote Server。
 
-自建托管Server可使用仓库内的[最小 Server](apps/server/README.zh.md)，其 Web 页面仅提供设备状态。
+自建托管 Server 可使用仓库内的 [Server](apps/server/README.zh.md)，支持 WebRTC `LAN -> P2P -> TURN -> Relay` 协商与端到端加密 Relay 兜底；公网 P2P 需要配置 STUN/TURN。
 
 ## 界面截图
 

@@ -8,7 +8,7 @@ Harness `0.2.1-rc.1` 为开发基线。保留 `0.2.0-rc.2` / rc.1 的官方 Type
 peer range 接纳 `0.2.2` 预发布版。版本范围不代表 runtime 验收通过。
 Host 插件、随包 Remote 客户端和 Android 已移除 Harness `0.1.1-rc.2` ApiProxy 兼容。请使用提供官方 Typert Remote carrier 的 Host；仅提供 ApiProxy 或不支持能力发现的旧 Host 会被拒绝，不再降级。CodeX/ACP 保留独立数据面，Desktop 内存投影统一使用 Typert。本轮不改独立 VS Code Client 或独立 Remote Web 仓库。
 完整 Server、Remote Web 和 Admin 在独立 Server 仓库实现。
-本仓库 `apps/server` 提供最小单账号 Relay Server。
+本仓库 `apps/server` 提供最小单账号 Server：Control、WebRTC 信令转发、短期 TURN 凭据与加密 Relay。
 
 状态规则：勾选项只表示条目所述范围完成。源码实现、自动化验证与真机验收分别记录。
 RC.1 的源码适配与本地自动化验证见兼容性说明；不能替代真机验收。
@@ -328,6 +328,9 @@ Typert Remote contract，不得在 Plugin Host 恢复 `sessions.*`、`session.se
 ## 最小自部署 Server
 
 - [x] 环境变量单账号、登录/状态页、持久化设备凭据、Control/加密 Relay 转发
+- [x] WebRTC 信令转发、STUN/TURN 配置与 `/api/v1/turn/credentials` 按连接发放短期凭据
+- [ ] 真实网络下的 LAN/P2P/TURN 与对称 NAT/CGNAT 回退验收，覆盖 relay-only Host 与未声明 `transport.lan` 的 Host
+- [ ] 让 Client 获知链路的实际协商传输（例如 `connect.accepted` 可选字段）：relay-only Host 目前仍先经历 direct 与 turn 两次 WebRTC 协商超时才落到 Relay
 - [ ] 完成 Docker 镜像构建与容器启动验收。记录健康检查和凭据持久化结果。
 - [ ] 真实 Desktop/Android/VS Code 跨机 E2E 与反向代理长期连接回归
 

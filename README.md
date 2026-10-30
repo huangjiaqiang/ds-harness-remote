@@ -164,7 +164,7 @@ Download the latest APK from [GitHub Releases](https://github.com/liguobao/ds-ha
 
 By default, Remote uses this project's hosted Server at [https://dsh.r2049.cn](https://dsh.r2049.cn).
 
-For self-hosting, use the repository's [minimal Server](apps/server/README.md); its Web page shows device status only.
+For self-hosting, use the repository's [Server](apps/server/README.md). It supports WebRTC `LAN -> P2P -> TURN -> Relay` negotiation with an end-to-end encrypted Relay fallback; configure STUN/TURN for P2P across NAT.
 
 ## Screenshots
 

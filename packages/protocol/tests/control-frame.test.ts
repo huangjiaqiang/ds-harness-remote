@@ -536,6 +536,14 @@ describe('transport.selected payload rejection', () => {
     })).payload).toMatchObject({ transport: 'lan' })
   })
 
+  it('preserves the optional TURN node diagnostic', () => {
+    expect(parseControlFrame(makeFrame('transport.selected', {
+      ...valid,
+      transport: 'turn',
+      turnNode: 'turn.example.com',
+    })).payload).toMatchObject({ transport: 'turn', turnNode: 'turn.example.com' })
+  })
+
   it('rejects invalid selected transport payloads', async () => {
     await runScenarios([
       {

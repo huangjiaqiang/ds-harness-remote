@@ -130,7 +130,7 @@ Relay 通过已建立的 WSS 转发 Base64URL 编码的 Noise ciphertext。它�
 2. TURN path；
 3. WebSocket Relay。
 
-无法加载 WebRTC runtime、Server 禁用 WebRTC、ICE/TURN 配置获取失败、DataChannel 超时或协商失败时，连接建立流程会清理临时 RTC 状态并回落 Relay。用户选择 Relay-only，或 Host 配置 `forceRelay` 时，双方不尝试 WebRTC。
+无法加载 WebRTC runtime、Server 禁用 WebRTC、ICE/TURN 配置获取失败、DataChannel 超时或协商失败时，连接建立流程会清理临时 RTC 状态并回落 Relay。用户选择 Relay-only 时 Client 不尝试 WebRTC。Host 配置 `forceRelay` 或没有 RTC runtime 时只宣告 `transport.relay`：链路不包含 WebRTC 传输，Server 不转发信令，Client 的 WebRTC 协商超时后回退 Relay。
 
 这套自动降级主要覆盖**连接建立阶段**。已建立连接在 Wi-Fi/移动网络切换、休眠唤醒或 DataChannel 关闭后的无缝迁移仍在完善；当前安全行为是关闭受影响的 Remote connection，再新建 transport 与 Noise channel，而不是在结果未知时把同一个 mutation 静默重发到另一条路径。
 

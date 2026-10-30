@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { WebSocket } from 'ws'
 import { MAX_CONTROL_FRAME_BYTES, createControlFrame } from '@dsh-remote/protocol'
@@ -13,6 +13,12 @@ import { ClientSecureTransport } from '../../../packages/plugin/src/client-secur
 import { createRemoteServer } from '../src/server.js'
 
 const account = 'owner@example.com', password = 'local-test-password'
+const ice = {
+  stunUrls: ['stun:stun.test.example:3478'],
+  turnUrls: ['turn:turn.test.example:3478?transport=udp'],
+  turnSecret: 'test-turn-secret',
+  turnTtlSeconds: 600,
+}
 let app: ReturnType<typeof createRemoteServer>, dir: string, base: string, accountToken: string
 const sockets: WebSocket[] = []
 const secureClients: ClientSecureTransport[] = []
@@ -22,7 +28,7 @@ async function request(path: string, method = 'GET', body?: unknown, token?: str
   return { status: response.status, data: await response.json(), headers: response.headers }
 }
 async function start(pass = password) {
-  app = createRemoteServer({ account, password: pass, dataFile: join(dir, 'state.json'), publicUrl: 'http://localhost:8080' })
+  app = createRemoteServer({ account, password: pass, dataFile: join(dir, 'state.json'), publicUrl: 'http://localhost:8080', ice })
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
   base = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`
 }
@@ -51,16 +57,20 @@ class Wire {
 async function socket(d: Awaited<ReturnType<typeof device>>, overrides = {}) {
   const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws/v1/connect'); sockets.push(ws)
   const wire = new Wire(ws); await once(ws, 'open')
-  wire.send('hello', { role: d.role, deviceId: d.deviceId, accessToken: d.accessToken, protocols: [1], capabilities: ['transport.relay', 'transport.p2p'], clientVersion: d.clientVersion, ...overrides })
+  wire.send('hello', { role: d.role, deviceId: d.deviceId, accessToken: d.accessToken, protocols: [1], capabilities: ['transport.lan', 'transport.p2p', 'transport.turn', 'transport.relay'], clientVersion: d.clientVersion, ...overrides })
   return wire
 }
 async function connection() {
   const h = await device('host'), c = await device(), host = await socket(h), client = await socket(c)
-  expect(await host.next('hello.ack')).toMatchObject({ capabilities: ['transport.relay'], webrtcEnabled: false })
+  expect(await host.next('hello.ack')).toMatchObject({
+    capabilities: ['transport.lan', 'transport.p2p', 'transport.turn', 'transport.relay'],
+    webrtcEnabled: true,
+  })
   await client.next('hello.ack')
-  client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['relay'] })
+  client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['lan', 'p2p', 'turn', 'relay'] })
   const incoming = await host.next('connect.incoming')
   expect(incoming.clientIdentityKey).toBe(c.identityKey)
+  expect(incoming.preferredTransports).toEqual(['lan', 'p2p', 'turn', 'relay'])
   host.send('connect.accepted', { connectionId: incoming.connectionId })
   const { connectionId } = await client.next('connect.accepted')
   return { h, c, host, client, connectionId }
@@ -167,6 +177,155 @@ describe('account and device authorization', () => {
     expect((await request('/auth/refresh', 'POST', { deviceId: d.deviceId, refreshToken: d.refreshToken })).status).toBe(401)
   })
 })
+describe('self-hosted WebRTC signaling and ICE', () => {
+  it('forwards SDP, ICE and the selected WebRTC transport', async () => {
+    const ctx = await connection()
+    const offer = { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, sdp: 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n' }
+    ctx.client.send('signal.offer', offer)
+    expect(await ctx.host.next('signal.offer')).toMatchObject(offer)
+
+    const answer = { connectionId: ctx.connectionId, targetDeviceId: ctx.c.deviceId, sdp: 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\n' }
+    ctx.host.send('signal.answer', answer)
+    expect(await ctx.client.next('signal.answer')).toMatchObject(answer)
+
+    const trickle = {
+      connectionId: ctx.connectionId,
+      targetDeviceId: ctx.c.deviceId,
+      candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.10 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 },
+    }
+    ctx.host.send('signal.ice', trickle)
+    expect(await ctx.client.next('signal.ice')).toMatchObject(trickle)
+
+    ctx.client.send('transport.selected', {
+      connectionId: ctx.connectionId,
+      targetDeviceId: ctx.h.deviceId,
+      transport: 'p2p',
+      turnNode: 'turn.test.example',
+    })
+    expect(await ctx.host.next('transport.selected')).toMatchObject({ transport: 'p2p', turnNode: 'turn.test.example' })
+  })
+
+  it('keeps relay-only peers working and rejects unnegotiated transports', async () => {
+    const h = await device('host'), c = await device()
+    const host = await socket(h, { capabilities: ['transport.relay'] })
+    const client = await socket(c, { capabilities: ['transport.relay'] })
+    expect(await host.next('hello.ack')).toMatchObject({ capabilities: ['transport.relay'], webrtcEnabled: true })
+    await client.next('hello.ack')
+    client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['relay'] })
+    const incoming = await host.next('connect.incoming')
+    expect(incoming.preferredTransports).toEqual(['relay'])
+    host.send('connect.accepted', { connectionId: incoming.connectionId })
+    const { connectionId } = await client.next('connect.accepted')
+    client.send('transport.selected', { connectionId, targetDeviceId: h.deviceId, transport: 'p2p' })
+    expect((await client.next('error')).code).toBe('CAPABILITY_NOT_SUPPORTED')
+  })
+
+  it('does not forward signaling a relay-only link never negotiated', async () => {
+    const h = await device('host'), c = await device()
+    const host = await socket(h, { capabilities: ['transport.relay'] })
+    const client = await socket(c)
+    await host.next('hello.ack'); await client.next('hello.ack')
+    // A WebRTC-capable Client still asks for lan/p2p; the Host only negotiated relay.
+    client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['lan', 'p2p', 'relay'] })
+    const incoming = await host.next('connect.incoming')
+    expect(incoming.preferredTransports).toEqual(['relay'])
+    host.send('connect.accepted', { connectionId: incoming.connectionId })
+    const { connectionId } = await client.next('connect.accepted')
+    client.send('signal.offer', { connectionId, targetDeviceId: h.deviceId, sdp: 'v=0\r\n' })
+    client.send('signal.ice', { connectionId, targetDeviceId: h.deviceId, candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.10 5000 typ host' } })
+    // Relay fallback must survive: the link stays up and its selection is forwarded.
+    client.send('transport.selected', { connectionId, targetDeviceId: h.deviceId, transport: 'relay' })
+    expect(await host.next('transport.selected')).toMatchObject({ transport: 'relay' })
+    expect(host.messages.filter(message => message.type.startsWith('signal.'))).toEqual([])
+    expect(client.messages.filter(message => message.type === 'error')).toEqual([])
+  })
+
+  it('reports a LAN selection to Hosts without transport.lan as p2p', async () => {
+    await runScenarios([
+      { name: 'legacy Host keeps the link', hostVersion: '0.1.0', forwarded: false },
+      { name: 'modern Host receives p2p', hostVersion: '0.4.15', forwarded: true },
+    ].map(row => ({ name: row.name, run: async () => {
+      const h = await device('host'), c = await device()
+      const host = await socket(h, { capabilities: ['transport.p2p', 'transport.relay'], clientVersion: row.hostVersion })
+      const client = await socket(c)
+      await host.next('hello.ack'); await client.next('hello.ack')
+      client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['lan', 'p2p', 'relay'] })
+      const incoming = await host.next('connect.incoming')
+      expect(incoming.preferredTransports).toEqual(['p2p', 'relay'])
+      host.send('connect.accepted', { connectionId: incoming.connectionId })
+      const { connectionId } = await client.next('connect.accepted')
+      client.send('transport.selected', { connectionId, targetDeviceId: h.deviceId, transport: 'lan' })
+      if (row.forwarded) {
+        expect(await host.next('transport.selected')).toMatchObject({ transport: 'p2p' })
+      } else {
+        // A Host without transport.lan resumes from its own RTC callback, so the
+        // frame is not forwarded and the link must not be torn down.
+        client.send('secure.handshake', { connectionId, targetDeviceId: h.deviceId, step: 1, data: 'noise' })
+        expect((await host.next('secure.handshake')).step).toBe(1)
+      }
+      expect(client.messages.filter(message => message.type === 'error')).toEqual([])
+    } })))
+  }, 15_000)
+
+  it('accepts the Host data-plane report instead of dropping the link', async () => {
+    await runScenarios([
+      { name: 'negotiated transport is forwarded', preferred: ['lan', 'p2p', 'relay'], transport: 'lan', forwarded: 'lan', clientVersion: '0.4.15' },
+      { name: 'unnegotiated transport is ignored', preferred: ['turn', 'relay'], transport: 'lan', forwarded: undefined, clientVersion: '0.4.15' },
+      // The version gate is about Hosts; a Client older than the frame must still receive it.
+      { name: 'legacy client version still receives it', preferred: ['p2p', 'relay'], transport: 'p2p', forwarded: 'p2p', clientVersion: '0.1.0' },
+    ].map(row => ({ name: row.name, run: async () => {
+      const h = await device('host'), c = await device()
+      const host = await socket(h), client = await socket(c, { clientVersion: row.clientVersion })
+      await host.next('hello.ack'); await client.next('hello.ack')
+      client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: row.preferred })
+      const incoming = await host.next('connect.incoming')
+      host.send('connect.accepted', { connectionId: incoming.connectionId })
+      const { connectionId } = await client.next('connect.accepted')
+      // The Host plugin reports the data plane it bound once its own data
+      // channel opens; rejecting that frame would tear down the connection.
+      host.send('transport.selected', { connectionId, targetDeviceId: c.deviceId, transport: row.transport })
+      if (row.forwarded !== undefined) {
+        expect(await client.next('transport.selected')).toMatchObject({ transport: row.forwarded })
+      } else {
+        expect(client.messages.filter(message => message.type === 'transport.selected')).toEqual([])
+      }
+      expect(client.messages.filter(message => message.type === 'error')).toEqual([])
+      client.send('secure.handshake', { connectionId, targetDeviceId: h.deviceId, step: 1, data: 'noise' })
+      expect((await host.next('secure.handshake')).step).toBe(1)
+    } })))
+  })
+
+  it('does not issue TURN credentials before the Host accepts', async () => {
+    const h = await device('host'), c = await device()
+    const host = await socket(h), client = await socket(c)
+    await host.next('hello.ack'); await client.next('hello.ack')
+    client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['relay'] })
+    const incoming = await host.next('connect.incoming')
+    expect((await request(`/turn/credentials?connection_id=${incoming.connectionId}`, 'GET', undefined, c.accessToken)).status).toBe(404)
+  })
+
+  it('issues connection-scoped STUN/TURN credentials to both participants', async () => {
+    const ctx = await connection()
+    const result = await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET', undefined, ctx.c.accessToken)
+    expect(result.status).toBe(200)
+    expect(result.data.iceServers).toEqual(expect.arrayContaining([{ urls: ['stun:stun.test.example:3478'] }]))
+    const turn = result.data.iceServers.find((server: { credential?: string }) => server.credential !== undefined)
+    expect(turn).toBeDefined()
+    const [expiry, deviceId] = turn.username.split(':')
+    expect(deviceId).toBe(ctx.c.deviceId)
+    expect(Number(expiry)).toBeGreaterThan(Math.floor(Date.now() / 1000) + 500)
+    expect(turn.credential).toBe(createHmac('sha1', ice.turnSecret).update(turn.username).digest('base64'))
+
+    const hostResult = await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET', undefined, ctx.h.accessToken)
+    expect(hostResult.status).toBe(200)
+
+    const outsider = await device()
+    expect((await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET', undefined, outsider.accessToken)).status).toBe(404)
+    expect((await request('/turn/credentials?connection_id=missing', 'GET', undefined, ctx.c.accessToken)).status).toBe(404)
+    expect((await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET')).status).toBe(401)
+  })
+})
+
 describe('control authorization and encrypted relay', () => {
   it('rejects invalid Control messages at the WebSocket boundary', async () => {
     await runScenarios(['unsupported-version', 'binary-control', 'oversized-control', 'unknown-frame-type'].map(reason => ({

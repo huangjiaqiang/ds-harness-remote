@@ -2,7 +2,7 @@
 
 [English](README.md) · **中文**
 
-单账号 Remote 中继，环境变量配置账号密码，Web 提供首页、登录和设备状态页。Server 不包含在 Host 插件 bundle 中，需要单独部署。
+单账号 Remote Server：Control 信令、端到端加密 Relay，以及 WebRTC LAN/P2P/TURN 数据面。环境变量配置账号密码，Web 提供首页、登录和设备状态页。Server 不包含在 Host 插件 bundle 中，需要单独部署。
 
 ## 自部署页面
 
@@ -65,12 +65,47 @@ node --env-file=.env dist/main.js
 | `DSH_SERVER_HOST` | 监听/端口映射地址，默认 `127.0.0.1`；局域网设为 `0.0.0.0` |
 | `DSH_SERVER_PORT` | 默认 `8080` |
 | `DSH_SERVER_DATA_FILE` | 默认 `data/state.json`，相对启动目录 |
+| `DSH_SERVER_STUN_URLS` | 可选，逗号分隔的 STUN URL；公网 P2P 至少需要一个 STUN |
+| `DSH_SERVER_TURN_URLS` | 可选，逗号分隔的 TURN URL；对称 NAT/CGNAT 需要 |
+| `DSH_SERVER_TURN_SECRET` | coturn `static-auth-secret`，启用短期 TURN 凭据，需同时设置 `DSH_SERVER_TURN_URLS` |
+| `DSH_SERVER_TURN_USERNAME` / `DSH_SERVER_TURN_PASSWORD` | 静态 TURN 凭据，需同时设置 `DSH_SERVER_TURN_URLS`，不能与 `DSH_SERVER_TURN_SECRET` 同时设置 |
+| `DSH_SERVER_TURN_TTL` | TURN 临时凭据有效期，默认 `3600` 秒 |
 
 公网使用 HTTPS 反向代理，并将 `DSH_SERVER_PUBLIC_URL` 设为实际域名；代理需支持 `/ws/v1/connect` 的 WebSocket Upgrade，空闲超时大于 75 秒。
 
+## WebRTC / P2P
+
+Server 在 `hello.ack` 中回显 Client 在 `hello` 里声明的 transport capability，并在 Host 与 Client 之间转发 `signal.offer` / `signal.answer` / `signal.ice` 和 `transport.selected`。一条连接只协商双方都声明过的 transport，其他传输的信令不会转发，因此只声明 `transport.relay` 的 Host 保持在加密 Relay 上。连接路径按 `LAN -> P2P -> TURN -> Relay` 协商，WebRTC 失败时回退到端到端加密的 WSS Relay。
+
+公网 P2P 至少需要 STUN；对称 NAT、运营商 CGNAT 或移动网络通常需要 TURN。示例：
+
+```dotenv
+DSH_SERVER_STUN_URLS=stun:stun.l.google.com:19302
+DSH_SERVER_TURN_URLS=turn:turn.example.com:3478?transport=udp
+DSH_SERVER_TURN_SECRET=replace-with-coturn-static-auth-secret
+DSH_SERVER_TURN_TTL=3600
+```
+
+对应的 coturn 关键参数：
+
+```bash
+turnserver \
+  --use-auth-secret \
+  --static-auth-secret="$DSH_SERVER_TURN_SECRET" \
+  --realm=remote.example.com \
+  --fingerprint \
+  --no-cli \
+  --no-multicast-peers \
+  --min-port=49160 --max-port=49200
+```
+
+需要放行 UDP/TCP 3478 以及上面的 TURN 端口段。只填 STUN 不填 TURN 时，直连失败会回退 Relay。
+
+`/api/v1/turn/credentials?connection_id=...` 只向该连接的 Host/Client 发放凭据。使用 `DSH_SERVER_TURN_SECRET` 时，用户名格式为 `<过期时间>:<deviceId>`，密码为 HMAC-SHA1，可直接配合 coturn `use-auth-secret`。Server 只转发 SDP/ICE 和 Noise 密文，不参与 Noise 握手，也看不到 prompt、消息、工具输出或文件内容。
+
 ## 功能
 
-- 支持设备注册、凭据刷新、设备发现、Control 与端到端加密 Relay。
+- 支持设备注册、凭据刷新、设备发现、Control 信令、端到端加密 Relay，以及 WebRTC LAN/P2P/TURN 数据面。
 - 单进程运行；持久化保存 `data` 目录。重启后设备凭据保留，Web 需重新登录；修改密码后设备需重新授权。
 
 验证：`pnpm --filter @dsh-remote/server test`。真实跨机与长期连接仍待回归。UI 复用来源见 [web/UPSTREAM.md](web/UPSTREAM.md)。

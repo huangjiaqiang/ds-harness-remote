@@ -1055,6 +1055,8 @@ export const transportSelectedPayloadSchema = z.object({
   connectionId: z.string().min(1),
   targetDeviceId: z.string().min(1),
   transport: selectedTransportEnum,
+  /** Best-effort relay hostname reported by the initiator for TURN diagnostics. */
+  turnNode: z.string().min(1).optional(),
 })
 
 export const pingPongPayloadSchema = z.object({

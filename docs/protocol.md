@@ -22,7 +22,7 @@
 - Plugin 的v0.1.2 alpha.1–rc.1 与 v0.1.5 rc.1 Session V3 Typert Remote tunnel、加密、重连和 capability 行为
 - Mock Host/Client 与协议 conformance fixtures
 
-`apps/server` 实现本文的单账号注册/刷新、设备发现、Control 与 Relay 子集；范围见 [最小 Server](../apps/server/README.md)。其余多账号、主机匹配码、Browser 授权、WebRTC/TURN 与 Admin 能力仍属于独立 Server，不得把未实现的能力声明为可用。
+`apps/server` 实现本文的单账号注册/刷新、设备发现、Control、WebRTC 信令转发、短期 TURN 凭据与加密 Relay；范围见 [最小 Server](../apps/server/README.md)。多账号、主机匹配码、Browser 授权与 Admin 能力仍属于独立 Server，不得把未实现的能力声明为可用。
 
 任何与本文不一致的示例代码都视为未完成实现，不能反向修改协议语义。当前尚未发布，
 旧 Android 业务 RPC 明确不兼容；首版发布后破坏兼容性的变更必须提升协议版本。
@@ -502,6 +502,12 @@ WebRTC DataChannel 建立后，Initiator 必须先发送 `transport.selected`，
 `transport.selected.payload.transport` 的允许值为 `lan | p2p | turn | relay`。`lan` 是一等
 线协议值，双方声明 `transport.lan` capability 时必须端到端保留；Server 仅可为未声明该
 capability、仍只接受 `p2p | turn | relay` 的旧 RC2 Host 将 `lan` 兼容降级为 `p2p`。
+
+Responder 在自己的数据通道打开后也会上报一条 `transport.selected` 作为数据面通知，因此
+Server 必须接受来自链路任一端的该帧。Responder 的上报以它本机的 ICE 路径为准，可能不在
+该链路协商出的传输集合内（例如链路只协商了 `turn | relay`，而两端实际走 LAN）；此时
+Server 按通知忽略，不得据此关闭连接或丢弃链路。Client 的选择仍是绑定的权威来源，不在
+协商集合内时按协议拒绝。
 
 Host 必须要求 `authorization` 为 `account`，校验 identityKey 格式，并通过受 membership
 保护的设备详情接口确认 Client descriptor。本机已有相同 deviceId 但公钥不同则必须拒绝；

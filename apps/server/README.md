@@ -2,7 +2,7 @@
 
 **English** · [中文](README.zh.md)
 
-A single-account Remote relay with credentials configured through environment variables. Its Web UI includes a landing page, sign-in, and device status page. The Server is deployed separately from the Host plugin bundle.
+A single-account Remote Server with Control signaling, end-to-end encrypted Relay, and WebRTC LAN/P2P/TURN data planes. Credentials are configured through environment variables. Its Web UI includes a landing page, sign-in, and device status page. The Server is deployed separately from the Host plugin bundle.
 
 ## Self-hosted Web flow
 
@@ -65,12 +65,47 @@ Open <http://localhost:8080>. Set the same Server URL on your Host and Client, t
 | `DSH_SERVER_HOST` | Listen / port-binding address; default `127.0.0.1`, use `0.0.0.0` for LAN access |
 | `DSH_SERVER_PORT` | Default `8080` |
 | `DSH_SERVER_DATA_FILE` | Default `data/state.json`, relative to the working directory |
+| `DSH_SERVER_STUN_URLS` | Optional comma-separated STUN URLs; at least one STUN is required for P2P across NAT |
+| `DSH_SERVER_TURN_URLS` | Optional comma-separated TURN URLs; needed for symmetric NAT/CGNAT |
+| `DSH_SERVER_TURN_SECRET` | coturn `static-auth-secret`; enables short-lived TURN credentials and requires `DSH_SERVER_TURN_URLS` |
+| `DSH_SERVER_TURN_USERNAME` / `DSH_SERVER_TURN_PASSWORD` | Static TURN credentials; require `DSH_SERVER_TURN_URLS` and are mutually exclusive with `DSH_SERVER_TURN_SECRET` |
+| `DSH_SERVER_TURN_TTL` | TURN credential lifetime in seconds; default `3600` |
 
 For public access, use an HTTPS reverse proxy and set `DSH_SERVER_PUBLIC_URL` to your domain. The proxy must support WebSocket Upgrade at `/ws/v1/connect` with an idle timeout above 75 seconds.
 
+## WebRTC / P2P
+
+The Server echoes the transport capabilities a Client declared in `hello` back through `hello.ack`, and forwards `signal.offer` / `signal.answer` / `signal.ice` and `transport.selected` between Host and Client. A connection only negotiates the transports that both peers declared, and signaling for any other transport is not forwarded, so a Host that only offers `transport.relay` stays on the encrypted Relay. Connections negotiate `LAN -> P2P -> TURN -> Relay` and fall back to the end-to-end encrypted WSS Relay when WebRTC fails.
+
+P2P across the public internet needs at least a STUN server; symmetric NAT, carrier CGNAT, and mobile networks usually need TURN. Example:
+
+```dotenv
+DSH_SERVER_STUN_URLS=stun:stun.l.google.com:19302
+DSH_SERVER_TURN_URLS=turn:turn.example.com:3478?transport=udp
+DSH_SERVER_TURN_SECRET=replace-with-coturn-static-auth-secret
+DSH_SERVER_TURN_TTL=3600
+```
+
+Relevant coturn flags:
+
+```bash
+turnserver \
+  --use-auth-secret \
+  --static-auth-secret="$DSH_SERVER_TURN_SECRET" \
+  --realm=remote.example.com \
+  --fingerprint \
+  --no-cli \
+  --no-multicast-peers \
+  --min-port=49160 --max-port=49200
+```
+
+Allow UDP/TCP 3478 and the TURN port range above. With STUN but no TURN, a failed direct path falls back to Relay.
+
+`/api/v1/turn/credentials?connection_id=...` only issues credentials to that connection's Host and Client. With `DSH_SERVER_TURN_SECRET`, the username is `<unix-expiry>:<deviceId>` and the credential is its base64 HMAC-SHA1, which matches coturn `use-auth-secret`. The Server only forwards SDP/ICE and Noise ciphertext; it does not participate in the Noise handshake and cannot read prompts, messages, tool output, or file contents.
+
 ## Features
 
-- Device registration, credential refresh, device discovery, Control, and end-to-end encrypted Relay.
+- Device registration, credential refresh, device discovery, Control signaling, end-to-end encrypted Relay, and WebRTC LAN/P2P/TURN data planes.
 - Single-process operation with persistent data. Device credentials survive restarts; Web users sign in again. Changing the password requires devices to reauthorize.
 
 Tests: `pnpm --filter @dsh-remote/server test`. Cross-machine and long-running validation remain pending. UI sources: [web/UPSTREAM.md](web/UPSTREAM.md).

@@ -103,7 +103,7 @@ Plugin bundle 构建统一 esbuild 的依赖模块路径标签，避免 pnpm iso
 | Codex Remote 领域 | 作为现有 Remote Plugin 内部可选领域：Host stdio App Server、默认开启且可在设置中关闭、固定 allowlist 与连接隔离已实现；Desktop 以 v0.1.2 Typert 内存载体复用 DSH 原生 UI，Android 直接消费同一 `codex.app.*` 并复用移动端 Workspace/Session/Chat；两端可通过受限 `project/create` 将 Host 上已存在的真实目录注册为 Project，并都只保留内存展示投影；既有 Desktop 与 Android 真机 E2E、大 History、断线恢复和多 Client 观察已验证 | Project 新建跨设备 E2E、长期稳定性、跨版本回归和安全审查 |
 | Mock Host | 旧 Android Remote RPC 联调工具，当前冻结 | 若恢复 Android 再迁移或替换 |
 | Desktop | Host 设置、Remote 工作区模态框、远程 Header、连接链路与加密状态已接入 Harness Web UI，Host status 由 loopback SSE 推送（无固定间隔的 status 轮询），原生窗口跨机 E2E 已验证 | 多窗口、休眠/唤醒和代理网络回归 |
-| 开源自部署 Server | `apps/server` 已实现单账号授权、设备凭据持久化与刷新、Control/Noise 握手转发和加密 Relay、Web 登录与设备状态页；提供 Dockerfile/Compose；单进程、Relay-only，不提供 Remote Web 会话界面或 WebRTC/TURN | Docker 实际构建与启动验证、真实 Desktop/Android/VS Code 跨机 E2E、反向代理长期连接回归 |
+| 开源自部署 Server | `apps/server` 已实现单账号授权、设备凭据持久化与刷新、Control/Noise 握手转发、WebRTC 信令转发与 STUN/TURN 配置（`/api/v1/turn/credentials` 按连接发放短期凭据）、加密 Relay、Web 登录与设备状态页；提供 Dockerfile/Compose；单进程，不提供 Remote Web 会话界面 | Docker 实际构建与启动验证、真实 Desktop/Android/VS Code 跨机 E2E（含 LAN/P2P/TURN 与 relay-only Host）、反向代理长期连接回归 |
 | 完整 Server/Remote Web/Admin | 独立 Server 仓库已有实现，REST、Control WebSocket、Relay、Signaling 与 conformance fixture 跨仓库联调已完成 | 完整站点 runtime 变更在独立 Server 仓库完成，并同步跨仓库契约 |
 
 完整任务和优先级以 `docs/TODO.md` 为准。不得把 TODO 中的目标能力描述成已经完成。
@@ -799,3 +799,35 @@ Remote 窗口先通过 loopback `client.authorization.status` 只读检查本地
 保留已知列表，不将失败解释为退出登录；明确授权错误码才回登录。空主机文案仅用于
 成功的空列表，不用于请求失败。Plugin check、client-runtime 17 个核心测试、build、
 DSH bundle 与 diff check 通过；未新增 Windows 首次安装或跨设备验收。
+
+## Self-hosted WebRTC signaling guard (2026-10-29)
+
+`apps/server` 的 Gateway 只在链路协商出 `lan`/`p2p`/`turn` 之一时转发 `signal.offer` /
+`signal.answer` / `signal.ice`。relay-only 链路丢弃信令，让 Client 走既有协商超时回退到
+Relay；Host 插件把未协商的信令视为协议违规并关闭整条 Control 连接，转发它会让该 Host
+上所有 Client 的 tunnel 一起掉线。`transport.selected` 对只接受 `p2p|turn|relay` 的旧 Host
+按 protocol.md §11 将 `lan` 降级为 `p2p`，LAN 路径的链路保持有效。
+`docs/protocol.md`、`docs/server.md`、`docs/README.md`、`docs/TODO.md` 与本文件状态表同步为
+当前范围：Control、WebRTC 信令转发、短期 TURN 凭据与加密 Relay。
+
+验证：`apps/server` 2 文件 / 23 个测试通过，新增的“relay-only 链路不转发信令”与“`lan`
+降级”两条回归在撤销修复后分别失败；`tsc -p apps/server/tsconfig.json --noEmit`、独立起
+服务的端到端探针（relay-only Host 收不到 `signal.*`，`transport.selected` relay 正常转发）
+与 `git diff --check` 通过。未验证真实跨机 LAN/P2P/TURN、对称 NAT/CGNAT、旧版 Host 实机与
+Docker 部署。
+
+## Self-hosted WebRTC data-plane report (2026-10-30)
+
+Host 插件在自己的 WebRTC 数据通道打开后会主动上报一条 `transport.selected` 作为数据面通知。
+自部署 Gateway 此前只接受 Client 发的该帧，收到 Host 的上报即以 `CAPABILITY_NOT_SUPPORTED`
+丢弃整条 link，因此经自部署 Server 的每条 WebRTC 连接在通道建立后立即被拆掉，Client 反复
+重连。现在 Gateway 接受链路任一端的上报：在该链路协商集合内时按原方向转发，不在集合内时
+按通知忽略，不得因该帧关闭连接或丢弃链路；Client 的选择仍按协议校验。`docs/protocol.md`
+§11 与 `docs/server.md` §11 已同步该契约。
+
+验证：`apps/server` 2 文件 / 24 个测试通过（新增 Host 上报被接受并转发、协商外上报被忽略
+且链路保持可用两条回归，撤销修复后失败），`tsc -p apps/server/tsconfig.json --noEmit`、
+重建镜像后 `healthz` 正常；用仓库内 `AdaptiveTransport` + werift + `ClientSecureTransport`
+从本机对真实 Host 复验：LAN 路径约 4 秒建立加密通道（mode LAN），仅协商 `turn|relay` 的
+链路在 Host 上报协商外传输时正确回退 Relay 并建立加密通道。未验证 Android 真机与跨运营商
+网络的完整交互。

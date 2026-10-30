@@ -8,7 +8,7 @@
 
 本文保留完整 Server 的设计与互操作契约。用户于 2026-09-19 授权在当前仓库实现最小自部署版本，其运行方式与支持的 API 见 [最小 Server 说明](../apps/server/README.zh.md)。
 
-最小版本参考独立仓库的账号/设备 API、WebSocket Gateway 与 Hub 逻辑，使用环境变量单账号和 JSON 文件持久化，支持 Control/Noise handshake forwarding/opaque Relay。Web 提供登录与设备状态页。后文记录独立 Server 项目的完整设计。
+最小版本参考独立仓库的账号/设备 API、WebSocket Gateway 与 Hub 逻辑，使用环境变量单账号和 JSON 文件持久化，支持 Control/Noise handshake forwarding、WebRTC 信令转发（`signal.offer` / `signal.answer` / `signal.ice` / `transport.selected`）、短期 TURN credential 与 opaque Relay。Web 提供登录与设备状态页。后文记录独立 Server 项目的完整设计。
 
 ## 1. 定位
 
@@ -226,6 +226,10 @@ Server 不修改 SDP，不参与 DataChannel 业务协议。
 `secure.handshake` 必须通过单一有序发送队列转发，禁止为不同 frame 启动彼此独立的
 fire-and-forget send task。尤其不能让 `secure.handshake` 越过先收到的
 `transport.selected`；否则 Client 和 Host 可能把同一条 Noise channel 绑定到不同数据面。
+
+`transport.selected` 由 Client 发起的绑定选择和 Responder 的数据面通知共同组成。Server
+必须接受来自链路任一端的该帧；Responder 上报的传输不在该链路协商集合内时按通知忽略，
+不得因为该帧而关闭连接或丢弃链路。只有 Client 的选择不在协商集合内时才按协议拒绝。
 `lan` 是 `transport.selected` 的一等线协议值；双方声明 `transport.lan` capability 时必须
 原样转发。只有目标旧 RC2 Host 未声明该 capability 时，才允许兼容降级为 `p2p`。
 
